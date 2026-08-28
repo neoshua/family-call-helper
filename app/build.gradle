@@ -1,0 +1,21 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'com.jia.callhelper'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.jia.callhelper"
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}

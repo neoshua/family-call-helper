@@ -1,0 +1,9 @@
+<resources>
+    <color name="greenPrimary">#07C160</color>
+    <color name="greenDark">#06AD56</color>
+    <color name="redPrimary">#FA5151</color>
+    <color name="textMain">#1A1A1A</color>
+    <color name="textSub">#888888</color>
+    <color name="bgBlack">#000000</color>
+    <color name="bgCard">#F7F7F7</color>
+</resources>

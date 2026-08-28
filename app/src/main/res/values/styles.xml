@@ -1,0 +1,14 @@
+<resources>
+    <!-- 设置页主题 -->
+    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/greenPrimary</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+
+    <!-- 全屏来电大按钮界面主题（深色沉浸） -->
+    <style name="AlertTheme" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/bgBlack</item>
+        <item name="android:statusBarColor">@color/bgBlack</item>
+        <item name="android:navigationBarColor">@color/bgBlack</item>
+    </style>
+</resources>

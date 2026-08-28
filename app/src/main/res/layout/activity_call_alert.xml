@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
+    android:paddingLeft="24dp"
+    android:paddingRight="24dp">
+
+    <TextView
+        android:id="@+id/tv_badge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="40dp"
+        android:text="微信来电"
+        android:textColor="#99FFFFFF"
+        android:textSize="26sp"/>
+
+    <TextView
+        android:id="@+id/tv_caller"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="22dp"
+        android:gravity="center"
+        android:textColor="#FFFFFF"
+        android:textSize="54sp"
+        android:textStyle="bold"
+        android:maxLines="2"
+        android:ellipsize="end"/>
+
+    <TextView
+        android:id="@+id/tv_type"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:textColor="#07C160"
+        android:textSize="30sp"/>
+
+    <Space
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_weight="1"/>
+
+    <!-- 超大绿色接听按钮 -->
+    <Button
+        android:id="@+id/btn_accept"
+        android:layout_width="230dp"
+        android:layout_height="230dp"
+        android:background="@drawable/bg_circle_green"
+        android:stateListAnimator="@null"
+        android:text="接听"
+        android:textColor="#FFFFFF"
+        android:textSize="58sp"
+        android:textStyle="bold"/>
+
+    <TextView
+        android:id="@+id/tv_hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:text="点这个绿色大按钮接听"
+        android:textColor="#FFFFFF"
+        android:textSize="26sp"/>
+
+    <Space
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_weight="1"/>
+
+    <TextView
+        android:id="@+id/tv_auto"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:text="8 秒后自动接听"
+        android:textColor="#FFD54F"
+        android:textSize="28sp"
+        android:visibility="gone"/>
+
+    <!-- 红色挂断按钮（较小，避免误触） -->
+    <Button
+        android:id="@+id/btn_decline"
+        android:layout_width="140dp"
+        android:layout_height="140dp"
+        android:layout_marginBottom="36dp"
+        android:background="@drawable/bg_circle_red"
+        android:stateListAnimator="@null"
+        android:text="挂断"
+        android:textColor="#FFFFFF"
+        android:textSize="34sp"
+        android:textStyle="bold"/>
+</LinearLayout>

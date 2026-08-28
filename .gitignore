@@ -1,0 +1,18 @@
+# 构建产物
+build/
+dist/
+*.apk
+*.jks
+*.keystore
+
+# IDE
+.idea/
+*.iml
+.gradle/
+local.properties
+.DS_Store
+
+# 中间文件
+*.class
+*.dex
+*.log

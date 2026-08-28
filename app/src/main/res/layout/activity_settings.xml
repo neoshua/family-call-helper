@@ -1,0 +1,339 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:background="@android:color/white">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <!-- 标题 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="亲情接听助手"
+            android:textColor="@color/textMain"
+            android:textSize="32sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="帮爸妈接听微信电话：大声播报 + 大按钮接听 + 家人来电自动接"
+            android:textColor="@color/textSub"
+            android:textSize="16sp"/>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="18dp"
+            android:layout_marginBottom="6dp"
+            android:background="#EEEEEE"/>
+
+        <!-- 第一步：通知使用权 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="第一步：开启「通知使用权」"
+            android:textColor="@color/textMain"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:id="@+id/status_notification"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="17sp"/>
+
+        <Button
+            android:id="@+id/btn_open_notification_access"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="去开启"
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"/>
+
+        <!-- 第二步：无障碍服务 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:text="第二步：开启「无障碍服务」"
+            android:textColor="@color/textMain"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="开启后，按下大按钮时才能自动帮您点微信里的接听键"
+            android:textColor="@color/textSub"
+            android:textSize="15sp"/>
+
+        <TextView
+            android:id="@+id/status_accessibility"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="17sp"/>
+
+        <Button
+            android:id="@+id/btn_open_accessibility"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="去开启"
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"/>
+
+        <!-- 第三步：悬浮窗权限（安卓 10 以下自动隐藏） -->
+        <LinearLayout
+            android:id="@+id/row_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:text="第三步：允许「显示在其他应用上层」"
+                android:textColor="@color/textMain"
+                android:textSize="20sp"
+                android:textStyle="bold"/>
+
+            <TextView
+                android:id="@+id/status_overlay"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="17sp"/>
+
+            <Button
+                android:id="@+id/btn_open_overlay"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_btn_primary"
+                android:stateListAnimator="@null"
+                android:text="去开启"
+                android:textColor="#FFFFFF"
+                android:textSize="20sp"/>
+        </LinearLayout>
+
+        <!-- 第四步：全屏通知（安卓 10+） -->
+        <LinearLayout
+            android:id="@+id/row_fullscreen"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:text="第四步：允许「锁屏时全屏通知」"
+                android:textColor="@color/textMain"
+                android:textSize="20sp"
+                android:textStyle="bold"/>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="锁屏时来电也能弹出大按钮界面（含本应用和微信的权限）"
+                android:textColor="@color/textSub"
+                android:textSize="15sp"/>
+
+            <TextView
+                android:id="@+id/status_fullscreen"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="17sp"/>
+
+            <Button
+                android:id="@+id/btn_open_fullscreen"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_btn_primary"
+                android:stateListAnimator="@null"
+                android:text="去开启"
+                android:textColor="#FFFFFF"
+                android:textSize="20sp"/>
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="26dp"
+            android:layout_marginBottom="6dp"
+            android:background="#EEEEEE"/>
+
+        <!-- 家人白名单 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="家人名单（语音会用这个称呼播报）"
+            android:textColor="@color/textMain"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="添加家人后：① 播报时直接说称呼，如「大儿子来电话了」；② 勾选「自动接听」的家人来电，几秒后自动接通，老人不用碰手机"
+            android:textColor="@color/textSub"
+            android:textSize="15sp"/>
+
+        <EditText
+            android:id="@+id/input_name"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="10dp"
+            android:hint="称呼（必填），如：大儿子"
+            android:inputType="text"
+            android:textSize="18sp"/>
+
+        <EditText
+            android:id="@+id/input_number"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="8dp"
+            android:hint="微信备注名或手机号（选填，用于识别）"
+            android:inputType="text"
+            android:textSize="18sp"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="自动接听前等"
+                android:textColor="@color/textMain"
+                android:textSize="17sp"/>
+
+            <EditText
+                android:id="@+id/input_auto_delay"
+                android:layout_width="80dp"
+                android:layout_height="52dp"
+                android:layout_marginLeft="8dp"
+                android:layout_marginRight="8dp"
+                android:gravity="center"
+                android:inputType="number"
+                android:text="8"
+                android:textSize="18sp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="秒"
+                android:textColor="@color/textMain"
+                android:textSize="17sp"/>
+
+            <Button
+                android:id="@+id/btn_save_delay"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:layout_marginLeft="12dp"
+                android:background="@drawable/bg_btn_ghost"
+                android:stateListAnimator="@null"
+                android:minWidth="0dp"
+                android:paddingLeft="20dp"
+                android:paddingRight="20dp"
+                android:text="保存秒数"
+                android:textColor="@color/textMain"
+                android:textSize="16sp"/>
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btn_add_whitelist"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="＋ 添加到家人名单"
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"/>
+
+        <LinearLayout
+            android:id="@+id/whitelist_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="vertical"/>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="26dp"
+            android:layout_marginBottom="6dp"
+            android:background="#EEEEEE"/>
+
+        <!-- 试听效果 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="试听效果"
+            android:textColor="@color/textMain"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+
+        <Button
+            android:id="@+id/btn_test_voice"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="▶ 播放一段模拟来电（试听）"
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"/>
+
+        <!-- 后台保活 -->
+        <Button
+            android:id="@+id/btn_open_battery"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_btn_ghost"
+            android:stateListAnimator="@null"
+            android:text="去设置「自启动 / 后台运行」（防杀后台）"
+            android:textColor="@color/textMain"
+            android:textSize="18sp"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="26dp"
+            android:layout_marginBottom="20dp"
+            android:gravity="center"
+            android:text="亲情接听助手 v1.0 · 仅在本地运行，不联网、不上传数据"
+            android:textColor="#BBBBBB"
+            android:textSize="14sp"/>
+    </LinearLayout>
+</ScrollView>

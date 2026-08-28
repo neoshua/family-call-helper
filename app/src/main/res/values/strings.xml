@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">亲情接听助手</string>
+    <string name="listener_label">微信来电监听（亲情接听助手）</string>
+    <string name="accessibility_label">微信来电自动接听（亲情接听助手）</string>
+    <string name="accessibility_desc">开启后，本应用可以在微信来电时语音播报来电人姓名，您点击绿色大按钮后自动帮您按下微信的接听键；白名单中的家人来电还可自动接听。本服务仅在本机运行，不联网、不上传任何数据。</string>
+</resources>
