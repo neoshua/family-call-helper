@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
+# 切到工程根目录（脚本位于 tools/ 下）
+cd "$(dirname "$0")/.."
 
 # 优先使用环境变量指定的工具链，否则自动查找
 BT=${BT:-""}
@@ -45,10 +46,10 @@ rm -rf build/*.apk
 find app/src/main/java build/gen -name "*.java" > build/sources.txt
 javac -source 1.8 -target 1.8 -Xlint:-options -bootclasspath "$JAR" -d build/obj @build/sources.txt
 
-# 4. 转 DEX
+# 4. 转 DEX（注意：输出目录必须以 / 结尾）
 find build/obj -name "*.class" > build/classes.txt
 "$D8" --release --lib "$JAR" --min-api 21 \
-    --output build/dex $(cat build/classes.txt)
+    --output build/dex/ $(cat build/classes.txt)
 
 # 5. 把 classes.dex 打入 APK
 cp build/app-unsigned.apk build/unsigned.apk

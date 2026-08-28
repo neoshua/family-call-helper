@@ -20,5 +20,5 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
       - uses: actions/upload-artifact@v4
         with:
-          name: elder-call-helper-apk
+          name: family-call-helper-apk
           path: dist/*.apk
