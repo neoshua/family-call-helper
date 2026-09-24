@@ -1,4 +1,5 @@
 name: Build APK
+
 on:
   push:
     branches: [main, master]
@@ -9,16 +10,82 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
-      - run: bash tools/build_apk.sh
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-      - uses: actions/upload-artifact@v4
+
+      # 说明：这里刻意不再使用 android-actions/setup-android@v3。
+      # 该 action 目前被强制运行在 Node.js 24 上，近期频繁在 setup 阶段直接失败，
+      # 会导致后续 sdkmanager / 编译 / 上传全部被跳过。
+      # 改为直接使用 GitHub runner 预装的 Android SDK，仅当缺包时才联网安装。
+      - name: 准备 Android SDK
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "Android SDK: $SDK"
+          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/cmdline-tools/bin:$SDK/tools/bin:$SDK/platform-tools:$PATH"
+
+          # 兜底：runner 上完全没有 command-line tools 时自行下载
+          if ! command -v sdkmanager >/dev/null 2>&1; then
+            echo "未找到 sdkmanager，下载 Android command-line tools…"
+            curl -fsSL -o /tmp/cmdtools.zip \
+              "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            mkdir -p /tmp/cmdtools
+            unzip -q -o /tmp/cmdtools.zip -d /tmp/cmdtools
+            mkdir -p "$SDK/cmdline-tools"
+            rm -rf "$SDK/cmdline-tools/latest"
+            mv /tmp/cmdtools/cmdline-tools "$SDK/cmdline-tools/latest"
+            export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
+          fi
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+          pick_bt() {
+            for v in 34.0.0 35.0.0 36.0.0; do
+              if [ -x "$SDK/build-tools/$v/aapt2" ]; then echo "$SDK/build-tools/$v"; return 0; fi
+            done
+            for d in "$SDK"/build-tools/*; do
+              if [ -x "$d/aapt2" ]; then echo "$d"; return 0; fi
+            done
+            return 1
+          }
+          pick_jar() {
+            for v in 34 35 36 33; do
+              if [ -f "$SDK/platforms/android-$v/android.jar" ]; then echo "$SDK/platforms/android-$v/android.jar"; return 0; fi
+            done
+            for f in "$SDK"/platforms/android-*/android.jar; do
+              if [ -f "$f" ]; then echo "$f"; return 0; fi
+            done
+            return 1
+          }
+
+          BT="$(pick_bt || true)"
+          JAR="$(pick_jar || true)"
+
+          if [ -z "$BT" ] || [ -z "$JAR" ]; then
+            echo "预装 SDK 缺少 build-tools / platform，使用 sdkmanager 安装…"
+            yes | sdkmanager --licenses >/dev/null 2>&1 || true
+            sdkmanager "platforms;android-34" "build-tools;34.0.0"
+            BT="$(pick_bt || true)"
+            JAR="$(pick_jar || true)"
+          fi
+
+          if [ -z "$BT" ] || [ -z "$JAR" ]; then
+            echo "::error::Android SDK 准备失败：找不到 build-tools 或 android.jar"
+            exit 1
+          fi
+          echo "build-tools = $BT"
+          echo "android.jar  = $JAR"
+          echo "BT=$BT"   >> "$GITHUB_ENV"
+          echo "JAR=$JAR" >> "$GITHUB_ENV"
+
+      - name: 编译并签名 APK
+        run: bash tools/build_apk.sh
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
         with:
           name: family-call-helper-apk
           path: dist/*.apk
+          if-no-files-found: error
