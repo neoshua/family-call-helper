@@ -114,14 +114,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SRC="$(ls dist/*.apk | head -n1)"
           # 版本号已在上一步算好（VERSION_NAME），与 App 内部 versionName 一致
           VER="${VERSION_NAME}"
           RUN="${{ github.run_number }}"
+          # 严格按文件名取本次产物，不再用「dist 里第一个 apk」——
+          # 那样一旦 dist 里有历史残留，就会把旧包当新包发出去。
+          SRC="dist/亲情接听助手-v${VER}.apk"
+          if [ ! -f "$SRC" ]; then
+            echo "::warning::未找到 $SRC，回退为 dist 下唯一的 apk"
+            SRC="$(ls dist/*.apk | head -n1)"
+          fi
+          echo "本次构建产物：$SRC"
           # 复制为带版本号的 ASCII 文件名，避免中文名被截断
           APK="dist/family-call-helper-v${VER}.apk"
           cp "$SRC" "$APK"
           echo "准备发布 APK: $APK (版本 v${VER})，App 内版本号同为 v${VER}"
+          # 防呆：确认包内版本号与文件名一致，不一致直接失败，避免又发出旧包
+          AAPT2="${BT:+$BT/aapt2}"; AAPT2="${AAPT2:-aapt2}"
+          BADGE="$("$AAPT2" dump badging "$APK" 2>/dev/null | head -1 || true)"
+          echo "包内信息：$BADGE"
+          case "$BADGE" in
+            *"versionName='${VER}'"*) echo "✅ 版本号校验通过" ;;
+            *) echo "::error::包内版本号与预期 v${VER} 不一致，疑似发错包：$BADGE"; exit 1 ;;
+          esac
           # 删除旧的 latest 发布与标签，重建为滚动最新版（固定链接下载）
           gh release delete latest --yes || true
           git push origin :refs/tags/latest || true

@@ -36,6 +36,10 @@ echo "构建版本：versionName=${VERSION_NAME} versionCode=${VERSION_CODE}"
 
 mkdir -p build/gen build/obj build/dex dist
 rm -rf build/*.apk
+# 【重要】先清空 dist 里的旧包。
+# 否则 dist/ 里残留的历史 APK 会和本次产物一起被 CI 扫到，
+# 而发布步骤若用「取第一个 apk」的方式，就会把旧包当成新包发出去。
+rm -f dist/*.apk dist/*.idsig
 
 # 1. 编译资源
 "$AAPT2" compile --dir app/src/main/res -o build/res.zip
