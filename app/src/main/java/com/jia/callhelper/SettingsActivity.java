@@ -101,13 +101,15 @@ public class SettingsActivity extends Activity {
         bind(R.id.btn_open_tts, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                // 跳到系统「文字转语音」设置，让用户选引擎 / 装中文语音包
+                // 跳到系统「文字转语音」设置，让用户选引擎 / 装中文语音包。
+                // 注意：Android SDK 里没有 Settings.ACTION_TTS_SETTINGS 这个常量，
+                // TTS 设置页只暴露了系统内部 action 字符串，所以这里用字面量并逐级兜底。
+                if (openTtsSettings()) return;
                 try {
-                    startActivity(new Intent(Settings.ACTION_TTS_SETTINGS));
+                    startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
                 } catch (Exception e) {
-                    try {
-                        startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS));
-                    } catch (Exception ignore) {}
+                    Toast.makeText(SettingsActivity.this,
+                            TtsSpeaker.fixPath(), Toast.LENGTH_LONG).show();
                 }
             }
         });
@@ -277,6 +279,31 @@ public class SettingsActivity extends Activity {
         mDelay.setText(String.valueOf(d));
         WhiteListManager.prefs(this).edit().putInt("auto_delay_sec", d).apply();
         Toast.makeText(this, "已保存：自动接听前等待 " + d + " 秒", Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * 打开系统「文字转语音」设置页。
+     *
+     * Android SDK 并未公开 TTS 设置页的常量（没有 Settings.ACTION_TTS_SETTINGS），
+     * 只能用系统内部的 action 字符串，且各厂商 ROM 命名不一，所以依次尝试，
+     * 全部打不开时返回 false，由调用方退到「无障碍」设置并给出文字指引。
+     */
+    private boolean openTtsSettings() {
+        String[] actions = new String[]{
+                "com.android.settings.TTS_SETTINGS",
+                "com.android.settings.TEXT_TO_SPEECH_SETTINGS",
+                "android.settings.TTS_SETTINGS"
+        };
+        for (String action : actions) {
+            try {
+                Intent it = new Intent(action);
+                if (getPackageManager().resolveActivity(it, 0) == null) continue;
+                startActivity(it);
+                return true;
+            } catch (Exception ignore) {
+            }
+        }
+        return false;
     }
 
     private void bind(int id, View.OnClickListener l) {

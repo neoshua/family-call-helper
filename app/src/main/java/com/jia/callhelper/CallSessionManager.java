@@ -140,8 +140,10 @@ public class CallSessionManager {
                 if (pi != null) {
                     try { pi.send(); } catch (Exception ignore) {}
                 }
-                // 再自动点微信的「接听」按钮（带重试，等界面就绪）
-                WeChatClicker.retryClick("接听", 4, 700);
+                // 再自动点微信的「接听」按钮。
+                // 重试是必要的：微信来电界面往往比我们的界面晚几百毫秒才显示，
+                // 而点击前会校验「当前窗口必须是微信」，窗口没到位就点不到。
+                WeChatClicker.retryClick("接听", 6, 800);
             }
         }, 500L);
         // 接通后由无障碍检测到「静音/免提」按钮 → onWeChatCallAnswered 清理；另有 3 分钟超时兜底

@@ -109,6 +109,16 @@ public class CallAlertActivity extends Activity {
     private void render() {
         mTvCaller.setText(mCaller);
         mTvType.setText(mVideo ? "视频通话" : "语音通话");
+        if (mTest) {
+            // 试听只是演示界面：这里没有真实来电，点按钮不会、也无法去操作微信。
+            // 明说清楚，免得家人以为「按了没反应 = App 坏了」。
+            TextView badge = (TextView) findViewById(R.id.tv_badge);
+            if (badge != null) badge.setText("微信来电（试听演示）");
+            TextView hint = (TextView) findViewById(R.id.tv_hint);
+            if (hint != null) {
+                hint.setText("试听演示：点绿色按钮只结束试听。\n真实来电时会替您按下微信的接听键");
+            }
+        }
     }
 
     private void updateCountdown() {

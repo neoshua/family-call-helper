@@ -26,6 +26,9 @@ import java.util.Deque;
  */
 public class CallHelperAccessibilityService extends AccessibilityService {
 
+    /** 只认微信。用于事件过滤，也用于「只在微信界面里点击」的防呆校验 */
+    private static final String WECHAT_PKG = "com.tencent.mm";
+
     private static volatile CallHelperAccessibilityService sInstance;
     private static final long SCAN_INTERVAL_MS = 1200;
     private volatile long mLastScanAt = 0;
@@ -56,7 +59,7 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null) return;
         CharSequence pkg = event.getPackageName();
-        if (pkg == null || !"com.tencent.mm".equals(pkg.toString())) return;
+        if (pkg == null || !WECHAT_PKG.equals(pkg.toString())) return;
 
         int type = event.getEventType();
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
@@ -80,6 +83,10 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         mLastScanAt = SystemClock.elapsedRealtime();
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
+        // 必须确认当前在微信界面：后台微信发来的事件也可能触发本方法，
+        // 但此刻屏幕最上层可能是我们自己的来电大按钮界面（同样有「接听/挂断」字样），
+        // 不校验就会把自己的界面误判成微信来电界面。
+        if (!isWeChatWindow(root)) return;
 
         try {
             boolean hasAnswer = findNode(root, "接听", false) != null;
@@ -107,10 +114,19 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         }
     }
 
-    /** 自动点击：找到文字对应的节点并点击（找不到返回 false，可重试） */
+    /**
+     * 自动点击：找到文字对应的节点并点击（找不到返回 false，可重试）。
+     *
+     * 防呆关键：**只允许在微信界面里点击**。
+     * 本应用自己的来电大按钮界面上也有一个写着「接听」的绿色大按钮，
+     * 若不校验包名，getRootInActiveWindow() 可能返回的是我们自己的界面，
+     * 于是「帮您按微信的接听键」就退化成「点了一下自己的按钮」——
+     * 表面上点了，实际根本没碰到微信。这就是必须做包名校验的原因。
+     */
     public boolean clickNodeWithText(String label) {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return false;
+        if (!isWeChatWindow(root)) return false;
         AccessibilityNodeInfo node = findNode(root, label, false);
         if (node == null) return false;
 
@@ -138,6 +154,13 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             } catch (Exception ignore) {}
         }
         return false;
+    }
+
+    /** 当前窗口是否属于微信（防止误操作我们自己的界面） */
+    private boolean isWeChatWindow(AccessibilityNodeInfo root) {
+        if (root == null) return false;
+        CharSequence pkg = root.getPackageName();
+        return pkg != null && WECHAT_PKG.equals(pkg.toString());
     }
 
     private boolean tapScreen(float x, float y) {

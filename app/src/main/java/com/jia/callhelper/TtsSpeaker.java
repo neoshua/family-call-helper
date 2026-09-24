@@ -43,11 +43,12 @@ public final class TtsSpeaker {
         try {
             sApp = ctx.getApplicationContext();
             sAm = (AudioManager) sApp.getSystemService(Context.AUDIO_SERVICE);
-            sEngineInstalled = hasInstalledEngine();
             sTts = new TextToSpeech(sApp, new TextToSpeech.OnInitListener() {
                 @Override
                 public void onInit(int status) {
                     synchronized (TtsSpeaker.class) {
+                        // getEngines() 是实例方法，只有拿到实例后才能查询，故放在这里
+                        sEngineInstalled = hasInstalledEngine(sTts);
                         if (status != TextToSpeech.SUCCESS || sTts == null) {
                             sState = STATE_INIT_FAILED;
                             return;
@@ -92,10 +93,11 @@ public final class TtsSpeaker {
         return false;
     }
 
-    /** 系统里是否装有任何语音引擎（不看中文） */
-    private static boolean hasInstalledEngine() {
+    /** 系统里是否装有任何语音引擎（不看中文）。getEngines() 是实例方法，必须在实例化后调用 */
+    private static boolean hasInstalledEngine(TextToSpeech tts) {
+        if (tts == null) return false;
         try {
-            List<TextToSpeech.EngineInfo> engines = TextToSpeech.getEngines();
+            List<TextToSpeech.EngineInfo> engines = tts.getEngines();
             return engines != null && !engines.isEmpty();
         } catch (Throwable ignore) {
             return false;
