@@ -100,8 +100,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          APK="$(ls dist/*.apk | head -n1)"
-          echo "准备发布 APK: $APK"
+          SRC="$(ls dist/*.apk | head -n1)"
+          # 复制为 ASCII 文件名，避免 runner 默认 locale 下中文名在发布时被截断
+          APK="dist/family-call-helper.apk"
+          cp "$SRC" "$APK"
+          echo "准备发布 APK: $SRC -> $APK"
           # 删除旧的 latest 发布与标签，重建为滚动最新版
           gh release delete latest --yes || true
           git push origin :refs/tags/latest || true
