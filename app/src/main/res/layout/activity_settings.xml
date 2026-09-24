@@ -157,7 +157,19 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:lineSpacingExtra="4dp"
             android:textSize="17sp"/>
+
+        <Button
+            android:id="@+id/btn_recheck_tts"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_btn_ghost"
+            android:stateListAnimator="@null"
+            android:text="↻ 重新检测语音播报"
+            android:textColor="@color/textMain"
+            android:textSize="18sp"/>
 
         <Button
             android:id="@+id/btn_open_tts"
@@ -317,6 +329,7 @@
             android:textSize="18sp"/>
 
         <TextView
+            android:id="@+id/tv_about"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="26dp"

@@ -83,6 +83,20 @@ jobs:
           echo "BT=$BT"   >> "$GITHUB_ENV"
           echo "JAR=$JAR" >> "$GITHUB_ENV"
 
+      # 版本号统一在这里算一次，编译和发布共用同一个值，
+      # 这样「App 里显示的版本号」与「下载的 APK 文件名」永远一致。
+      - name: 计算版本号 (1.x)
+        run: |
+          # 主版本号 MAJOR：升到 2 时由人工把下面 MAJOR 改为 2，
+          # 并同步把 MINOR_BASE 设为当时构建号，使次版本从 1 重新开始（如 2.1）。
+          MAJOR=1
+          MINOR_BASE=8
+          RUN="${{ github.run_number }}"
+          VER="${MAJOR}.$(( RUN - MINOR_BASE ))"
+          echo "VERSION_NAME=${VER}" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=${RUN}" >> "$GITHUB_ENV"
+          echo "本次版本号：${VER}（构建 #${RUN}）"
+
       - name: 编译并签名 APK
         run: bash tools/build_apk.sh
 
@@ -101,16 +115,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SRC="$(ls dist/*.apk | head -n1)"
-          # 主版本号 MAJOR：升到 2 时由人工把下面 MAJOR 改为 2，
-          # 并同步把 MINOR_BASE 设为当时构建号，使次版本从 1 重新开始（如 2.1）。
-          MAJOR=1
-          MINOR_BASE=8
+          # 版本号已在上一步算好（VERSION_NAME），与 App 内部 versionName 一致
+          VER="${VERSION_NAME}"
           RUN="${{ github.run_number }}"
-          VER="${MAJOR}.$(( RUN - MINOR_BASE ))"
           # 复制为带版本号的 ASCII 文件名，避免中文名被截断
           APK="dist/family-call-helper-v${VER}.apk"
           cp "$SRC" "$APK"
-          echo "准备发布 APK: $APK (版本 v${VER})"
+          echo "准备发布 APK: $APK (版本 v${VER})，App 内版本号同为 v${VER}"
           # 删除旧的 latest 发布与标签，重建为滚动最新版（固定链接下载）
           gh release delete latest --yes || true
           git push origin :refs/tags/latest || true

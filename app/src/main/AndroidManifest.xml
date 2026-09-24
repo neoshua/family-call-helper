@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jia.callhelper"
-    android:versionCode="2"
-    android:versionName="1.1.0">
+    android:versionCode="14"
+    android:versionName="1.6">
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34"/>
 
@@ -14,9 +14,18 @@
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
-    <!-- 安卓 11+ 包可见性：只声明微信 -->
+    <!--
+        安卓 11+（targetSdk >= 30）的「包可见性」限制：应用默认看不到其它应用。
+        必须显式声明才能：
+        1) 看到微信（无障碍在微信界面里找「接听」按钮）
+        2) 看到系统「文字转语音」引擎 —— 否则本应用连不上语音引擎，
+           会在小米等机型上误报「手机没有安装语音引擎」，语音播报直接失效。
+    -->
     <queries>
         <package android:name="com.tencent.mm"/>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
+        </intent>
     </queries>
 
     <application

@@ -113,6 +113,16 @@ public class SettingsActivity extends Activity {
                 }
             }
         });
+        bind(R.id.btn_recheck_tts, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // 用户在系统里改了引擎设置后，点这里强制重连一次并重新判定，
+                // 避免 App 一直记着上一次的失败结论
+                TtsSpeaker.recheck(SettingsActivity.this);
+                Toast.makeText(SettingsActivity.this, "正在重新检测…", Toast.LENGTH_SHORT).show();
+                pollTtsStatus(0);
+            }
+        });
         bind(R.id.btn_save_delay, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -171,14 +181,39 @@ public class SettingsActivity extends Activity {
         // 避免「引擎还没加载完就被误判成没装 TTS」
         TtsSpeaker.init(this);
         pollTtsStatus(0);
+
+        // 底部显示真实版本号（直接读安装包信息，不再写死，
+        // 避免「App 里显示 1.1.0、下载的包却叫 v1.5」这种对不上的情况）
+        TextView about = (TextView) findViewById(R.id.tv_about);
+        if (about != null) {
+            about.setText("版本 " + appVersion() + "\n"
+                    + "亲情接听助手 · 仅在本地运行，不联网、不上传数据");
+        }
     }
 
-    private static final int TTS_POLL_MAX = 12; // 12 × 500ms = 最多等 6 秒
+    /** 读取本应用真实的版本号（versionName），失败时返回 "未知" */
+    private String appVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "未知";
+        }
+    }
+
+    private static final int TTS_POLL_MAX = 16; // 16 × 500ms = 最多等 8 秒
 
     /** 轮询语音引擎状态，就绪或超时后停止 */
     private void pollTtsStatus(final int n) {
         updateTtsStatus();
         if (TtsSpeaker.isUsable() || n >= TTS_POLL_MAX) return;
+        // 到了 2 秒、5 秒还没结论，就主动说一句探测语：
+        // 引擎真的出声（onStart 回调）就改判为可用，比语言探测可靠得多。
+        // 注意：已经判定可用时不再探测，否则会把正在播的试听内容打断。
+        if ((n == 4 || n == 10)
+                && TtsSpeaker.getState() != TtsSpeaker.STATE_READY
+                && !TtsSpeaker.isSpeakVerified()) {
+            TtsSpeaker.probe();
+        }
         mHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -190,24 +225,31 @@ public class SettingsActivity extends Activity {
     /** 把语音引擎状态渲染到设置页（常驻，随时可自查） */
     private void updateTtsStatus() {
         if (mStatusTts == null) return;
+        boolean verbose = false;
         switch (TtsSpeaker.getState()) {
             case TtsSpeaker.STATE_READY:
                 mStatusTts.setText("✓ 语音播报正常，来电会念出「谁来电了」");
                 mStatusTts.setTextColor(0xFF1B7F3B);
                 break;
             case TtsSpeaker.STATE_NO_CHINESE:
-                mStatusTts.setText("✗ 有语音引擎但缺中文语音包，来电将用铃声提醒。\n"
-                        + TtsSpeaker.fixPath());
+                mStatusTts.setText("✗ " + TtsSpeaker.describeProblem() + "\n" + TtsSpeaker.fixPath());
                 mStatusTts.setTextColor(0xFFB3261E);
+                verbose = true;
                 break;
             case TtsSpeaker.STATE_INIT_FAILED:
                 mStatusTts.setText("✗ " + TtsSpeaker.describeProblem() + "\n" + TtsSpeaker.fixPath());
                 mStatusTts.setTextColor(0xFFB3261E);
+                verbose = true;
                 break;
             default:
                 mStatusTts.setText("正在检测语音引擎…（首次可能要几秒）");
                 mStatusTts.setTextColor(0xFF666666);
                 break;
+        }
+        // 出错时附上诊断信息（引擎包名 / 检测到几个引擎），方便排查是系统限制还是真没装
+        if (verbose) {
+            mStatusTts.append("\n");
+            mStatusTts.append("检测情况：" + TtsSpeaker.diagnostics());
         }
     }
 
@@ -232,7 +274,7 @@ public class SettingsActivity extends Activity {
         startActivity(it);
     }
 
-    /** 试听时的引擎等待：最多 6 秒，确认不可用才回退响铃 */
+    /** 试听时的引擎等待：最多 8 秒，确认不可用才回退响铃 */
     private void waitTtsForTest(final int n) {
         if (TtsSpeaker.isUsable()) {
             CallSessionManager.stopTestSounds(); // 已就绪：确保没有残留铃声
@@ -244,9 +286,15 @@ public class SettingsActivity extends Activity {
             CallSessionManager.fallbackToTestRingtone();
             updateTtsStatus();
             Toast.makeText(SettingsActivity.this,
-                    TtsSpeaker.describeProblem() + "可在本页下方一键打开语音设置。",
+                    "这次没能用语音播报，已改用铃声。本页下面的「检测情况」可看到原因。",
                     Toast.LENGTH_LONG).show();
             return;
+        }
+        // 中途用一句探测语验证引擎是否真的能出声（已判定可用时不打断播报）
+        if ((n == 4 || n == 10)
+                && TtsSpeaker.getState() != TtsSpeaker.STATE_READY
+                && !TtsSpeaker.isSpeakVerified()) {
+            TtsSpeaker.probe();
         }
         mHandler.postDelayed(new Runnable() {
             @Override

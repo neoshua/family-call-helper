@@ -26,36 +26,54 @@ D8="$BT/d8"
 ZIPALIGN="$BT/zipalign"
 APKSIGNER="$BT/apksigner"
 
+# 版本号：由 CI 通过环境变量传入（VERSION_NAME / VERSION_CODE），本地未传时用默认值。
+# 关键点：App 内部显示的版本号（versionName）与产出的 APK 文件名用同一个值，
+# 避免出现「安装后显示 1.1.0、下载的包却叫 v1.5」这种对不上的情况。
+VERSION_CODE=${VERSION_CODE:-2}
+VERSION_NAME=${VERSION_NAME:-1.1.0}
+APK_OUT="dist/亲情接听助手-v${VERSION_NAME}.apk"
+echo "构建版本：versionName=${VERSION_NAME} versionCode=${VERSION_CODE}"
+
 mkdir -p build/gen build/obj build/dex dist
 rm -rf build/*.apk
 
 # 1. 编译资源
 "$AAPT2" compile --dir app/src/main/res -o build/res.zip
 
-# 2. 链接生成基础 APK + R.java
+# 2.【重要】把版本号注入清单副本。
+# 直接用 aapt2 的 --version-code/--version-name 是无效的：当清单里已经写了
+# android:versionCode / versionName 时，清单属性的优先级更高，会把命令行参数覆盖掉，
+# 导致「包名叫 v1.6，装完却显示 1.1.0」。所以这里改清单副本，保证两边一致。
+MANIFEST=build/AndroidManifest.xml
+sed -e "s/android:versionCode=\"[^\"]*\"/android:versionCode=\"${VERSION_CODE}\"/" \
+    -e "s/android:versionName=\"[^\"]*\"/android:versionName=\"${VERSION_NAME}\"/" \
+    app/src/main/AndroidManifest.xml > "$MANIFEST"
+echo "清单版本号：$(grep -o 'android:versionName="[^"]*"' "$MANIFEST")"
+
+# 3. 链接生成基础 APK + R.java
 "$AAPT2" link -o build/app-unsigned.apk \
     -I "$JAR" \
-    --manifest app/src/main/AndroidManifest.xml \
+    --manifest "$MANIFEST" \
     --java build/gen \
     --auto-add-overlay \
     --min-sdk-version 21 --target-sdk-version 34 \
-    --version-code 2 --version-name 1.1.0 \
+    --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" \
     build/res.zip
 
-# 3. 编译 Java
+# 4. 编译 Java
 find app/src/main/java build/gen -name "*.java" > build/sources.txt
 javac -source 1.8 -target 1.8 -Xlint:-options -bootclasspath "$JAR" -d build/obj @build/sources.txt
 
-# 4. 转 DEX（注意：输出目录必须以 / 结尾）
+# 5. 转 DEX（注意：输出目录必须以 / 结尾）
 find build/obj -name "*.class" > build/classes.txt
 "$D8" --release --lib "$JAR" --min-api 21 \
     --output build/dex/ $(cat build/classes.txt)
 
-# 5. 把 classes.dex 打入 APK
+# 6. 把 classes.dex 打入 APK
 cp build/app-unsigned.apk build/unsigned.apk
 (cd build/dex && zip -q -u ../unsigned.apk classes.dex)
 
-# 6. 对齐 + 签名
+# 7. 对齐 + 签名
 "$ZIPALIGN" -f 4 build/unsigned.apk build/aligned.apk
 if [ ! -f tools/keystore.jks ]; then
     keytool -genkeypair -keystore tools/keystore.jks -alias callhelper \
@@ -64,11 +82,12 @@ if [ ! -f tools/keystore.jks ]; then
         -dname "CN=Family Call Helper, OU=Family, O=Home, L=Beijing, ST=Beijing, C=CN"
 fi
 "$APKSIGNER" sign --ks tools/keystore.jks --ks-pass pass:callhelper2024 \
-    --key-pass pass:callhelper2024 --out "dist/亲情接听助手-v1.1.apk" build/aligned.apk
+    --key-pass pass:callhelper2024 --out "$APK_OUT" build/aligned.apk
 
-# 7. 验证
-"$APKSIGNER" verify --print-certs "dist/亲情接听助手-v1.1.apk"
-"$AAPT2" dump badging "dist/亲情接听助手-v1.1.apk" | head -8
-
+# 8. 验证：必须打印出与文件名一致的版本号
+"$APKSIGNER" verify --print-certs "$APK_OUT"
+"$AAPT2" dump badging "$APK_OUT" | head -8
 echo ""
-echo "✅ 构建完成: dist/亲情接听助手-v1.1.apk"
+echo "✅ 构建完成: $APK_OUT"
+echo "   文件名版本: v${VERSION_NAME} / versionCode ${VERSION_CODE}"
+echo "   （App 内「设置」页底部会显示同一个版本号）"
