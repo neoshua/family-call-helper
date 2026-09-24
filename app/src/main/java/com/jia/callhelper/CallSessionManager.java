@@ -191,19 +191,13 @@ public class CallSessionManager {
     /** 设置页「试听」：只播报一次 + 短震动，不弹真界面逻辑 */
     public static void startTestCall(Context ctx, String name, boolean video) {
         Context app = ctx.getApplicationContext();
+        sApp = app;
         final String text = name + "来" + (video ? "视频" : "语音") + "电话了。请点击绿色大按钮接听。";
         TtsSpeaker.init(app);
         TtsSpeaker.speak(text);
-        // 引擎可能要一两秒才加载完，或手机根本没有中文语音引擎；
-        // 1.5 秒后若仍未就绪，回退响铃，保证「试听」一定听得到声音
-        sHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (!TtsSpeaker.isUsable()) {
-                    startTestRingtone(app);
-                }
-            }
-        }, 1500L);
+        // 注意：这里不再「1.5 秒后就当没 TTS 并响铃」。
+        // 引擎冷启动常超过 1.5 秒，那样会误报且出现「铃声 + 语音同时响」。
+        // 现在由调用方轮询 TtsSpeaker.getState()，确认不可用后才调 fallbackToTestRingtone()。
         try {
             Vibrator v = (Vibrator) app.getSystemService(Context.VIBRATOR_SERVICE);
             if (v != null) {
@@ -219,6 +213,16 @@ public class CallSessionManager {
     /** 试听界面关闭时调用，停止试听铃声 */
     public static void stopTestSounds() {
         stopTestRingtone();
+    }
+
+    /**
+     * 试听时，调用方轮询确认「中文语音确实不可用」后调用这里，再回退响铃。
+     * 避免引擎还在加载就提前响铃（会造成铃声与语音同时响的假象）。
+     */
+    public static void fallbackToTestRingtone() {
+        if (sApp == null) return;
+        if (TtsSpeaker.isUsable()) return; // 期间已就绪则无需响铃
+        startTestRingtone(sApp);
     }
 
     /** 试听无中文语音时的兜底：循环响系统铃声（不依赖语音引擎） */

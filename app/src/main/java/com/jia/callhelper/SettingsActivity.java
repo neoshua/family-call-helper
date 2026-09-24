@@ -34,10 +34,12 @@ public class SettingsActivity extends Activity {
     private TextView mStatusAcc;
     private TextView mStatusOverlay;
     private TextView mStatusFsi;
+    private TextView mStatusTts;
     private SeekBar mVolume;
     private TextView mVolumePct;
     private Switch mAutoMaster;
     private EditText mDelay;
+    private final Handler mHandler = new Handler(Looper.getMainLooper());
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -48,6 +50,7 @@ public class SettingsActivity extends Activity {
         mStatusAcc = (TextView) findViewById(R.id.status_accessibility);
         mStatusOverlay = (TextView) findViewById(R.id.status_overlay);
         mStatusFsi = (TextView) findViewById(R.id.status_fullscreen);
+        mStatusTts = (TextView) findViewById(R.id.status_tts);
         mVolume = (SeekBar) findViewById(R.id.seek_volume);
         mVolumePct = (TextView) findViewById(R.id.tv_volume_pct);
         mAutoMaster = (Switch) findViewById(R.id.sw_auto_master);
@@ -93,6 +96,19 @@ public class SettingsActivity extends Activity {
             @Override
             public void onClick(View v) {
                 startTest();
+            }
+        });
+        bind(R.id.btn_open_tts, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // 跳到系统「文字转语音」设置，让用户选引擎 / 装中文语音包
+                try {
+                    startActivity(new Intent(Settings.ACTION_TTS_SETTINGS));
+                } catch (Exception e) {
+                    try {
+                        startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                    } catch (Exception ignore) {}
+                }
             }
         });
         bind(R.id.btn_save_delay, new View.OnClickListener() {
@@ -148,6 +164,49 @@ public class SettingsActivity extends Activity {
                         REQ_POST_NOTIFICATIONS);
             }
         }
+
+        // 语音引擎自检：引擎是异步加载的，这里轮询更新状态，
+        // 避免「引擎还没加载完就被误判成没装 TTS」
+        TtsSpeaker.init(this);
+        pollTtsStatus(0);
+    }
+
+    private static final int TTS_POLL_MAX = 12; // 12 × 500ms = 最多等 6 秒
+
+    /** 轮询语音引擎状态，就绪或超时后停止 */
+    private void pollTtsStatus(final int n) {
+        updateTtsStatus();
+        if (TtsSpeaker.isUsable() || n >= TTS_POLL_MAX) return;
+        mHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                pollTtsStatus(n + 1);
+            }
+        }, 500L);
+    }
+
+    /** 把语音引擎状态渲染到设置页（常驻，随时可自查） */
+    private void updateTtsStatus() {
+        if (mStatusTts == null) return;
+        switch (TtsSpeaker.getState()) {
+            case TtsSpeaker.STATE_READY:
+                mStatusTts.setText("✓ 语音播报正常，来电会念出「谁来电了」");
+                mStatusTts.setTextColor(0xFF1B7F3B);
+                break;
+            case TtsSpeaker.STATE_NO_CHINESE:
+                mStatusTts.setText("✗ 有语音引擎但缺中文语音包，来电将用铃声提醒。\n"
+                        + TtsSpeaker.fixPath());
+                mStatusTts.setTextColor(0xFFB3261E);
+                break;
+            case TtsSpeaker.STATE_INIT_FAILED:
+                mStatusTts.setText("✗ " + TtsSpeaker.describeProblem() + "\n" + TtsSpeaker.fixPath());
+                mStatusTts.setTextColor(0xFFB3261E);
+                break;
+            default:
+                mStatusTts.setText("正在检测语音引擎…（首次可能要几秒）");
+                mStatusTts.setTextColor(0xFF666666);
+                break;
+        }
     }
 
     private void updateVolumePct(int cur, int max) {
@@ -158,18 +217,10 @@ public class SettingsActivity extends Activity {
     private void startTest() {
         TtsSpeaker.init(SettingsActivity.this);
         CallSessionManager.startTestCall(SettingsActivity.this, "张三", true);
-        // 1.5 秒后若仍无中文语音引擎，提示去装中文 TTS
-        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (!TtsSpeaker.isUsable()) {
-                    Toast.makeText(SettingsActivity.this,
-                            "未检测到中文语音引擎，已用铃声代替。\n请在「设置 → 辅助功能 → 文字转语音(TTS)」中"
-                                    + "安装并选择中文引擎（如系统自带或讯飞），即可语音播报。",
-                            Toast.LENGTH_LONG).show();
-                }
-            }
-        }, 1500L);
+        // 轮询等待语音引擎：就绪就什么都不用做（语音会自动播）；
+        // 只有确认「确实不可用」才回退铃声并给准确原因，
+        // 避免引擎冷启动慢（>1.5s）时被误判成「没装 TTS」。
+        waitTtsForTest(0);
         Intent it = new Intent(SettingsActivity.this, CallAlertActivity.class);
         it.putExtra("caller_name", "张三（测试）");
         it.putExtra("is_video", true);
@@ -177,6 +228,30 @@ public class SettingsActivity extends Activity {
         it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                 | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         startActivity(it);
+    }
+
+    /** 试听时的引擎等待：最多 6 秒，确认不可用才回退响铃 */
+    private void waitTtsForTest(final int n) {
+        if (TtsSpeaker.isUsable()) {
+            CallSessionManager.stopTestSounds(); // 已就绪：确保没有残留铃声
+            updateTtsStatus();
+            return;
+        }
+        if (n >= TTS_POLL_MAX) {
+            if (TtsSpeaker.isUsable()) return;
+            CallSessionManager.fallbackToTestRingtone();
+            updateTtsStatus();
+            Toast.makeText(SettingsActivity.this,
+                    TtsSpeaker.describeProblem() + "可在本页下方一键打开语音设置。",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        mHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                waitTtsForTest(n + 1);
+            }
+        }, 500L);
     }
 
     private void saveDelay() {
@@ -247,6 +322,8 @@ public class SettingsActivity extends Activity {
         } else {
             rowFsi.setVisibility(View.GONE);
         }
+
+        updateTtsStatus();
     }
 
     private void setStatus(TextView tv, boolean ok, String good, String bad) {

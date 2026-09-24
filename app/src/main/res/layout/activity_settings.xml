@@ -151,6 +151,25 @@
             android:textColor="#FFFFFF"
             android:textSize="20sp"/>
 
+        <!-- 语音播报状态：常驻自检，避免「误报没装 TTS」 -->
+        <TextView
+            android:id="@+id/status_tts"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:textSize="17sp"/>
+
+        <Button
+            android:id="@+id/btn_open_tts"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_btn_ghost"
+            android:stateListAnimator="@null"
+            android:text="去设置「语音引擎 / 中文语音包」"
+            android:textColor="@color/textMain"
+            android:textSize="18sp"/>
+
         <!-- 媒体音量 -->
         <TextView
             android:layout_width="wrap_content"
