@@ -90,7 +90,21 @@ public class SettingsActivity extends Activity {
         bind(R.id.btn_test_voice, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                TtsSpeaker.init(SettingsActivity.this);
                 CallSessionManager.startTestCall(SettingsActivity.this, "张三", true);
+                // 1.5 秒后若仍无中文语音引擎，提示用户去系统里安装/选择中文 TTS 引擎
+                new android.os.Handler(android.os.Looper.getMainLooper())
+                        .postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (!TtsSpeaker.isUsable()) {
+                                    Toast.makeText(SettingsActivity.this,
+                                            "未检测到中文语音引擎，已用铃声代替。\n请在「设置 → 辅助功能 → 文字转语音(TTS)」中"
+                                                    + "安装并选择中文引擎（如系统自带或讯飞），即可语音播报。",
+                                            Toast.LENGTH_LONG).show();
+                                }
+                            }
+                        }, 1500L);
                 Intent it = new Intent(SettingsActivity.this, CallAlertActivity.class);
                 it.putExtra("caller_name", "张三（测试）");
                 it.putExtra("is_video", true);

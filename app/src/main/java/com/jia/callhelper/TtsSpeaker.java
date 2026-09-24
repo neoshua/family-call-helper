@@ -10,13 +10,17 @@ import java.util.Locale;
  * 语音播报（TTS）单例。
  * - 播报时自动把媒体音量临时调高到 85%，播完恢复，确保老人听得到
  * - 中文 TTS 不可用时，上层会回退为循环响铃
+ * - 关键修复：TextToSpeech 初始化是异步的，本类在引擎就绪前会把播报内容排队，
+ *   引擎 onInit 完成后再自动补播，避免「点了没声音」的竞态
  */
 public final class TtsSpeaker {
 
     private static TextToSpeech sTts;
     private static AudioManager sAm;
+    private static Context sApp;
     private static volatile boolean sReady = false;
     private static volatile boolean sZhOk = false;
+    private static volatile String sPending = null; // 引擎加载完成前排队的待播文本
     private static int sSavedVol = -1;
 
     private TtsSpeaker() {}
@@ -24,9 +28,9 @@ public final class TtsSpeaker {
     public static synchronized void init(Context ctx) {
         if (sTts != null) return;
         try {
-            final Context app = ctx.getApplicationContext();
-            sAm = (AudioManager) app.getSystemService(Context.AUDIO_SERVICE);
-            sTts = new TextToSpeech(app, new TextToSpeech.OnInitListener() {
+            sApp = ctx.getApplicationContext();
+            sAm = (AudioManager) sApp.getSystemService(Context.AUDIO_SERVICE);
+            sTts = new TextToSpeech(sApp, new TextToSpeech.OnInitListener() {
                 @Override
                 public void onInit(int status) {
                     synchronized (TtsSpeaker.class) {
@@ -43,6 +47,12 @@ public final class TtsSpeaker {
                                 } catch (Exception ignore) {}
                             }
                         }
+                        // 引擎就绪后，把之前因为异步未初始化而排队的播报补上
+                        if (sReady && sZhOk && sPending != null) {
+                            String t = sPending;
+                            sPending = null;
+                            doSpeak(t);
+                        }
                     }
                 }
             });
@@ -53,8 +63,22 @@ public final class TtsSpeaker {
         return sReady && sZhOk;
     }
 
+    /**
+     * 播报。引擎未就绪会先排队、就绪后自动补播；无中文语音则丢弃（由上层回退响铃）。
+     */
     public static synchronized void speak(String content) {
-        if (!isUsable() || sTts == null) return;
+        if (sApp != null && sTts == null) init(sApp); // 兜底：尚未初始化则先初始化
+        if (isUsable()) {
+            doSpeak(content);
+        } else if (sTts != null && sReady && !sZhOk) {
+            // 引擎已就绪但没有中文语音：丢弃，不重复排队（上层负责响铃回退）
+        } else {
+            // 引擎还在加载：先排队，onInit 里会补播
+            sPending = content;
+        }
+    }
+
+    private static void doSpeak(String content) {
         boostVolume();
         try {
             sTts.speak(content, TextToSpeech.QUEUE_FLUSH, null, "call_announce");
@@ -65,6 +89,7 @@ public final class TtsSpeaker {
         if (sTts != null) {
             try { sTts.stop(); } catch (Exception ignore) {}
         }
+        sPending = null;
         restoreVolume();
     }
 

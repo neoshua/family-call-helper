@@ -60,6 +60,7 @@ public class CallSessionManager {
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
     private static Vibrator sVibrator;
     private static MediaPlayer sRingtone;
+    private static MediaPlayer sTestRingtone;
     private static PowerManager.WakeLock sWakeLock;
     private static CallAlertActivity sAlertActivity;
     private static int sAnnounceCount = 0;
@@ -188,8 +189,19 @@ public class CallSessionManager {
     /** 设置页「试听」：只播报一次 + 短震动，不弹真界面逻辑 */
     public static void startTestCall(Context ctx, String name, boolean video) {
         Context app = ctx.getApplicationContext();
+        final String text = name + "来" + (video ? "视频" : "语音") + "电话了。请点击绿色大按钮接听。";
         TtsSpeaker.init(app);
-        TtsSpeaker.speak(name + "来" + (video ? "视频" : "语音") + "电话了。请点击绿色大按钮接听。");
+        TtsSpeaker.speak(text);
+        // 引擎可能要一两秒才加载完，或手机根本没有中文语音引擎；
+        // 1.5 秒后若仍未就绪，回退响铃，保证「试听」一定听得到声音
+        sHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!TtsSpeaker.isUsable()) {
+                    startTestRingtone(app);
+                }
+            }
+        }, 1500L);
         try {
             Vibrator v = (Vibrator) app.getSystemService(Context.VIBRATOR_SERVICE);
             if (v != null) {
@@ -200,6 +212,45 @@ public class CallSessionManager {
                 }
             }
         } catch (Exception ignore) {}
+    }
+
+    /** 试听界面关闭时调用，停止试听铃声 */
+    public static void stopTestSounds() {
+        stopTestRingtone();
+    }
+
+    /** 试听无中文语音时的兜底：循环响系统铃声（不依赖语音引擎） */
+    private static void startTestRingtone(Context app) {
+        if (sTestRingtone != null) return;
+        try {
+            Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+            if (uri == null) return;
+            sTestRingtone = new MediaPlayer();
+            sTestRingtone.setDataSource(app, uri);
+            if (Build.VERSION.SDK_INT >= 21) {
+                sTestRingtone.setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build());
+            } else {
+                sTestRingtone.setAudioStreamType(android.media.AudioManager.STREAM_RING);
+            }
+            sTestRingtone.setLooping(true);
+            sTestRingtone.prepare();
+            sTestRingtone.start();
+        } catch (Exception ignore) {
+            sTestRingtone = null;
+        }
+    }
+
+    private static void stopTestRingtone() {
+        if (sTestRingtone != null) {
+            try {
+                sTestRingtone.stop();
+                sTestRingtone.release();
+            } catch (Exception ignore) {}
+            sTestRingtone = null;
+        }
     }
 
     // ---------------- 界面引用 ----------------
@@ -394,6 +445,7 @@ public class CallSessionManager {
         sHandler.removeCallbacks(sAutoRun);
         sHandler.removeCallbacks(sTimeout);
         stopSoundsAndVibration();
+        stopTestRingtone();
         finishAlertActivity();
         cancelNotification();
         if (sWakeLock != null) {

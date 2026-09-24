@@ -145,6 +145,9 @@ public class CallAlertActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (mTest) {
+            CallSessionManager.stopTestSounds(); // 关闭试听界面时停掉兜底铃声
+        }
         CallSessionManager.clearAlertActivity(this);
         if (mTick != null) {
             mUi.removeCallbacks(mTick);
