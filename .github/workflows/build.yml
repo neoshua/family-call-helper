@@ -96,19 +96,21 @@ jobs:
       # 发布到固定的 latest Release：直接挂 .apk（非 ZIP），永久可下载。
       # 该步骤在 GitHub 自己的 runner 上运行，能正常访问 releases 上传端点，
       # 不受本机/沙箱网络 DNS 限制影响。
-      - name: 发布到 Release (latest)
+      - name: 发布到 Release (latest, 带版本号)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SRC="$(ls dist/*.apk | head -n1)"
-          # 复制为 ASCII 文件名，避免 runner 默认 locale 下中文名在发布时被截断
-          APK="dist/family-call-helper.apk"
+          # 版本号取 workflow 运行次数（每次推送自动 +1），保证单调递增
+          VER="${{ github.run_number }}"
+          # 复制为带版本号的 ASCII 文件名，避免中文名被截断
+          APK="dist/family-call-helper-v${VER}.apk"
           cp "$SRC" "$APK"
-          echo "准备发布 APK: $SRC -> $APK"
-          # 删除旧的 latest 发布与标签，重建为滚动最新版
+          echo "准备发布 APK: $APK (版本 v${VER})"
+          # 删除旧的 latest 发布与标签，重建为滚动最新版（固定链接下载）
           gh release delete latest --yes || true
           git push origin :refs/tags/latest || true
           gh release create latest "$APK" \
-            --title "最新构建 (自动)" \
-            --notes "由 CI 在最新提交 ${{ github.sha }} 上自动构建的 APK，包含最新源码修改。" \
+            --title "最新构建 v${VER}" \
+            --notes "版本 v${VER}（构建 #${VER}），基于提交 ${{ github.sha }} 自动构建。" \
             --prerelease
