@@ -5,6 +5,9 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -89,3 +92,20 @@ jobs:
           name: family-call-helper-apk
           path: dist/*.apk
           if-no-files-found: error
+
+      # 发布到固定的 latest Release：直接挂 .apk（非 ZIP），永久可下载。
+      # 该步骤在 GitHub 自己的 runner 上运行，能正常访问 releases 上传端点，
+      # 不受本机/沙箱网络 DNS 限制影响。
+      - name: 发布到 Release (latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK="$(ls dist/*.apk | head -n1)"
+          echo "准备发布 APK: $APK"
+          # 删除旧的 latest 发布与标签，重建为滚动最新版
+          gh release delete latest --yes || true
+          git push origin :refs/tags/latest || true
+          gh release create latest "$APK" \
+            --title "最新构建 (自动)" \
+            --notes "由 CI 在最新提交 ${{ github.sha }} 上自动构建的 APK，包含最新源码修改。" \
+            --prerelease
