@@ -17,10 +17,10 @@ import java.util.Deque;
  * 微信专用无障碍服务。
  *
  * 作用：
- * 1. 看到「接听+挂断」按钮 → 判断为微信来电界面 → 通知 CallSessionManager 弹大按钮+播报
+ * 1. 看到「接听+挂断」按钮 → 判断为微信来电界面 → 通知 CallSessionManager 播报来电人
  *    （覆盖微信在前台、没有系统通知的场景）
  * 2. 看到接听消失、出现「静音/免提」→ 通话已接通 → 停止播报
- * 3. 提供自动点击能力：在大按钮界面按下「接听」后，替用户点掉微信里的小接听键
+ * 3. 提供自动点击能力：替用户点掉微信里的接听键（本应用自己不显示任何界面）
  *
  * 只监听 com.tencent.mm 一个包，其他应用零开销。
  */
@@ -84,8 +84,8 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         // 必须确认当前在微信界面：后台微信发来的事件也可能触发本方法，
-        // 但此刻屏幕最上层可能是我们自己的来电大按钮界面（同样有「接听/挂断」字样），
-        // 不校验就会把自己的界面误判成微信来电界面。
+        // 而此刻屏幕最上层可能是别的应用（甚至另一个也有「接听/挂断」字样的界面），
+        // 不校验就会把别的界面误判成微信来电界面。
         if (!isWeChatWindow(root)) return;
 
         try {
@@ -93,7 +93,7 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             boolean hasDecline = findNode(root, "挂断", false) != null;
 
             if (hasAnswer && hasDecline) {
-                // 微信来电界面（自己弹的大按钮界面也有这两个字，但它不在微信进程里，不会被扫到）
+                // 微信来电界面
                 boolean video = findNode(root, "切换到语音", false) != null;
                 String name = guessCallerName(root);
                 CallSessionManager.onIncomingViaA11y(this, name, video);
@@ -118,10 +118,9 @@ public class CallHelperAccessibilityService extends AccessibilityService {
      * 自动点击：找到文字对应的节点并点击（找不到返回 false，可重试）。
      *
      * 防呆关键：**只允许在微信界面里点击**。
-     * 本应用自己的来电大按钮界面上也有一个写着「接听」的绿色大按钮，
-     * 若不校验包名，getRootInActiveWindow() 可能返回的是我们自己的界面，
-     * 于是「帮您按微信的接听键」就退化成「点了一下自己的按钮」——
-     * 表面上点了，实际根本没碰到微信。这就是必须做包名校验的原因。
+     * 若不校验包名，getRootInActiveWindow() 可能返回的是别的应用的界面，
+     * 于是「帮您按微信的接听键」就点到了别处——表面上点成功了，实际根本没碰到微信。
+     * 这就是必须做包名校验的原因。
      */
     public boolean clickNodeWithText(String label) {
         AccessibilityNodeInfo root = getRootInActiveWindow();

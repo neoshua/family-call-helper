@@ -40,7 +40,7 @@ public class WeChatCallListenerService extends NotificationListenerService {
         String all = (title + " " + text + " " + bigText + " " + ticker).trim();
         if (all.isEmpty()) return;
 
-        // 1. 结束类通知：停止播报、关掉大按钮界面
+        // 1. 结束类通知：停止播报、清理会话
         if (isEndMessage(all)) {
             CallSessionManager.onWeChatCallEnded(this, all);
             return;
@@ -52,7 +52,7 @@ public class WeChatCallListenerService extends NotificationListenerService {
         String caller = resolveCaller(title, text, bigText, ticker);
         boolean video = all.contains("视频");
         PendingIntent pi = n.contentIntent;
-        CallSessionManager.startCall(this, caller, video, pi, false);
+        CallSessionManager.startCall(this, caller, video, pi);
     }
 
     private boolean isEndMessage(String s) {

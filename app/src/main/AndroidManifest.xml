@@ -6,10 +6,10 @@
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34"/>
 
-    <!-- 弹出自己的全屏来电通知（锁屏时点亮屏幕） -->
+    <!-- 来电提醒通知：锁屏时亮屏，并可直接进入微信通话界面（本应用不显示自己的界面） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
-    <!-- 安卓 10+ 后台弹出大按钮界面所需 -->
+    <!-- 允许后台把微信的通话界面调到前台：只有微信界面在最前面，模拟点击才落得到「接听」上 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
@@ -60,16 +60,6 @@
         <activity android:name=".ContactDetailActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden"/>
-
-        <!-- 全屏大按钮来电界面：锁屏之上显示、亮屏、常亮 -->
-        <activity android:name=".CallAlertActivity"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:excludeFromRecents="true"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:theme="@style/AlertTheme"/>
 
         <!-- 通知监听：读取微信来电通知（需用户在系统设置里授权） -->
         <service android:name=".WeChatCallListenerService"

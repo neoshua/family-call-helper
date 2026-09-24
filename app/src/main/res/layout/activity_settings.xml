@@ -147,7 +147,7 @@
             android:layout_marginTop="10dp"
             android:background="@drawable/bg_btn_primary"
             android:stateListAnimator="@null"
-            android:text="▶ 播放一段模拟来电（试听）"
+            android:text="▶ 试听语音播报（模拟张三来电）"
             android:textColor="#FFFFFF"
             android:textSize="20sp"/>
 

@@ -30,7 +30,7 @@ public class HomeActivity extends Activity {
         mBanner = (LinearLayout) findViewById(R.id.banner);
         mList = (LinearLayout) findViewById(R.id.list_container);
 
-        // 安卓 13+ 通知运行时权限（弹大按钮通知需要）
+        // 安卓 13+ 通知运行时权限（发来电提醒通知需要）
         if (Build.VERSION.SDK_INT >= 33) {
             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {
@@ -82,7 +82,7 @@ public class HomeActivity extends Activity {
         List<WhiteListManager.Entry> entries = WhiteListManager.load(this);
         if (entries.isEmpty()) {
             TextView empty = new TextView(this);
-            empty.setText("还没有家人。点下方「添加家人」，添加后微信来电会大声喊出称呼并弹出大按钮。");
+            empty.setText("还没有家人。点下方「添加家人」，添加后微信来电会大声喊出称呼并自动帮接。");
             empty.setTextSize(18);
             empty.setTextColor(0xFF888888);
             empty.setPadding(4, 24, 4, 24);

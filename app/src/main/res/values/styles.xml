@@ -5,10 +5,5 @@
         <item name="android:windowBackground">@android:color/white</item>
     </style>
 
-    <!-- 全屏来电大按钮界面主题（深色沉浸） -->
-    <style name="AlertTheme" parent="android:Theme.Material.NoActionBar.Fullscreen">
-        <item name="android:windowBackground">@color/bgBlack</item>
-        <item name="android:statusBarColor">@color/bgBlack</item>
-        <item name="android:navigationBarColor">@color/bgBlack</item>
-    </style>
+    <!-- 应用主题（本应用不显示自己的来电界面，因此没有全屏来电主题） -->
 </resources>

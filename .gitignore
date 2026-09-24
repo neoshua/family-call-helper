@@ -16,3 +16,6 @@ local.properties
 *.class
 *.dex
 *.log
+
+# javac 出错时生成的参数文件
+javac.*.args

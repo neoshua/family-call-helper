@@ -36,7 +36,12 @@ echo "构建版本：versionName=${VERSION_NAME} versionCode=${VERSION_CODE}"
 
 mkdir -p build/gen build/obj build/dex dist
 rm -rf build/*.apk
-# 【重要】先清空 dist 里的旧包。
+# 【重要】清空上一次的编译中间产物（*.class / R.java）。
+# 已删除的类如果残留在 build/obj 里，会被 d8 一并打进 classes.dex：
+# 虽然不会被调用，但等于把废弃代码（连带被删掉的界面）又塞回了安装包。
+rm -rf build/obj build/gen build/dex
+mkdir -p build/gen build/obj build/dex
+# 【重要】清空 dist 里的旧包。
 # 否则 dist/ 里残留的历史 APK 会和本次产物一起被 CI 扫到，
 # 而发布步骤若用「取第一个 apk」的方式，就会把旧包当成新包发出去。
 rm -f dist/*.apk dist/*.idsig
@@ -65,8 +70,11 @@ echo "清单版本号：$(grep -o 'android:versionName="[^"]*"' "$MANIFEST")"
     build/res.zip
 
 # 4. 编译 Java
+# 说明：用 -classpath 而不是 -bootclasspath。JDK 9 以后 javac 已忽略 -bootclasspath，
+# 若在部分 JDK 上生效还会把 java.lang.String 这类核心类一起屏蔽掉，导致满屏
+# "cannot find symbol / class file for java.lang.String not found"。
 find app/src/main/java build/gen -name "*.java" > build/sources.txt
-javac -source 1.8 -target 1.8 -Xlint:-options -bootclasspath "$JAR" -d build/obj @build/sources.txt
+javac -source 1.8 -target 1.8 -Xlint:-options -nowarn -classpath "$JAR" -d build/obj @build/sources.txt
 
 # 5. 转 DEX（注意：输出目录必须以 / 结尾）
 find build/obj -name "*.class" > build/classes.txt
@@ -90,7 +98,11 @@ fi
 
 # 8. 验证：必须打印出与文件名一致的版本号
 "$APKSIGNER" verify --print-certs "$APK_OUT"
-"$AAPT2" dump badging "$APK_OUT" | head -8
+# 注意：这里先把输出收进变量再 head。直接 `aapt2 dump badging ... | head -8` 时，
+# head 读够 8 行就退出，aapt2 继续往管道写会收到 SIGPIPE（退出码 141），
+# 在 set -o pipefail 下整个脚本会被判为失败——明明包已经构建好了。
+BADGING=$("$AAPT2" dump badging "$APK_OUT")
+echo "$BADGING" | head -8
 echo ""
 echo "✅ 构建完成: $APK_OUT"
 echo "   文件名版本: v${VERSION_NAME} / versionCode ${VERSION_CODE}"

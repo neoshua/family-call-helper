@@ -46,7 +46,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="微信来电大声播报 + 大按钮接听，守护爸妈"
+                android:text="微信来电大声播报 + 自动帮接，守护爸妈"
                 android:textColor="@color/textSub"
                 android:textSize="16sp"/>
 

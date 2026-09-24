@@ -5,7 +5,6 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
-import android.content.Intent;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.media.RingtoneManager;
@@ -22,73 +21,81 @@ import android.os.Vibrator;
  *
  * 一次微信来电的处理流程：
  * 1. 通知监听或无障碍服务发现来电 → startCall()
- * 2. 循环语音播报 + 震动 + 弹出全屏大按钮界面（含锁屏亮屏）
- * 3. 白名单家人 + 自动接听 → 倒计时后自动点击微信「接听」
- * 4. 用户按绿色大按钮 → performAccept() → 自动点微信「接听」
- * 5. 用户按红色按钮 → performDecline() → 自动点微信「挂断」
- * 6. 无障碍检测到已接通 / 通话结束 / 超时 → 清理一切
+ * 2. 语音播报「谁来电了」+ 震动；手机没有中文语音引擎时用铃声兜底
+ * 3. 白名单家人 + 自动接听开关都满足 → 等待 N 秒后自动点击微信的「接听」
+ * 4. 没点成功 → 响铃 + 震动 + 语音提醒：请自己点微信上的接听
+ * 5. 无障碍检测到已接通 / 通话结束 / 超时 → 清理一切
+ *
+ * ⚠️ 设计要点（v1.8 起）：**本应用不再显示任何自己的界面**。
+ *
+ * 以前来电时会弹一个我们自己的全屏「接听大按钮」界面，老人在那个界面上按了之后，
+ * 我们再去模拟点击微信里真正的接听键。这多出来的一层不仅没用，还有害：
+ *   - 那个按钮是假的，按了不能直接接听，只是"请求"我们去点微信，容易误会成 App 没反应；
+ *   - 真正的接听按钮只有一个，就在微信里。让老人直接看着微信的真界面反而更清楚；
+ *   - 锁屏时两层界面叠在一起，视觉和操作都乱。
+ * 所以现在只做两件事：**听**（发现微信来电）和 **点**（模拟点击微信的接听）。
+ * 点击时仍会保留一条高优先级通知：它能让锁屏亮屏、并把微信通话界面带到前台，
+ * 否则屏幕不亮、微信界面不在最前，点击是落不到微信上的。
  */
 public class CallSessionManager {
 
     public static class Session {
         public final String caller;
         public final boolean video;
-        public final boolean test;
-        public final PendingIntent openIntent; // 微信来电通知的 contentIntent，可拉起微信通话界面
+        /** 微信来电通知的 contentIntent：可拉起微信真实的通话界面（点击接听要靠它） */
+        public final PendingIntent openIntent;
         public final long startAt = System.currentTimeMillis();
         public volatile boolean autoAnswer = false;
         public volatile long autoAnswerAt;
         public volatile boolean ended = false;   // 整个会话结束
-        public volatile boolean handled = false; // 已接听或已挂断
+        public volatile boolean handled = false; // 接听流程已启动 / 已处理
 
-        Session(String caller, boolean video, PendingIntent openIntent, boolean test) {
+        Session(String caller, boolean video, PendingIntent openIntent) {
             this.caller = caller;
             this.video = video;
             this.openIntent = openIntent;
-            this.test = test;
         }
     }
 
     public static final int DEFAULT_AUTO_DELAY_SEC = 8;
 
-    private static final String CHANNEL_ID = "call_alert";
-    private static final int FSI_NOTIFY_ID = 2001;
+    private static final String CHANNEL_ID = "call_notify";
+    private static final int CALL_NOTIFY_ID = 2001;
     private static final long[] VIBRATE_PATTERN = {0, 700, 500, 700, 500};
+    /** 自动接听重试次数与间隔：微信界面常比通知晚几百毫秒出现，需要重试 */
+    private static final int CLICK_ATTEMPTS = 8;
+    private static final long CLICK_INTERVAL_MS = 800L;
 
     private static Session sSession;
     private static Context sApp;
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
     private static Vibrator sVibrator;
     private static MediaPlayer sRingtone;
-    private static MediaPlayer sTestRingtone;
     private static PowerManager.WakeLock sWakeLock;
-    private static CallAlertActivity sAlertActivity;
     private static int sAnnounceCount = 0;
 
     // ---------------- 对外接口 ----------------
 
-    public static synchronized Session current() {
-        return sSession;
-    }
-
     /** 通知监听 / 无障碍发现微信来电时调用 */
     public static synchronized void startCall(Context ctx, String caller, boolean video,
-                                              PendingIntent openIntent, boolean test) {
+                                              PendingIntent openIntent) {
         Context app = ctx.getApplicationContext();
         Session old = sSession;
-        // 同一个人 10 秒内的重复通知（通知刷新）直接忽略
-        if (old != null && !old.ended && !old.handled && old.caller != null
+        // 同一个人的重复通知（微信会刷新来电通知）直接忽略。
+        // 注意这里不排除 handled 的会话：自动接听的点击重试正在进行时，
+        // 若因一条刷新通知就重开会话，会把接听流程打断甚至重复点击。
+        if (old != null && !old.ended && old.caller != null
                 && old.caller.equals(caller)
-                && System.currentTimeMillis() - old.startAt < 10_000L) {
+                && System.currentTimeMillis() - old.startAt < 15_000L) {
             return;
         }
         cleanup(app);
 
         sApp = app;
-        sSession = new Session(caller, video, openIntent, test);
+        sSession = new Session(caller, video, openIntent);
         sAnnounceCount = 0;
 
-        WhiteListManager.Entry match = test ? null : WhiteListManager.match(app, caller);
+        WhiteListManager.Entry match = WhiteListManager.match(app, caller);
         int delay = WhiteListManager.prefs(app)
                 .getInt("auto_delay_sec", DEFAULT_AUTO_DELAY_SEC);
         // 自动接听需同时满足：总开关开启 + 该联系人标记了自动接听
@@ -105,7 +112,11 @@ public class CallSessionManager {
         if (!TtsSpeaker.isUsable()) {
             startRingtone(app); // 手机没有中文语音引擎时，退回响铃
         }
-        showOverlay(app);
+        // 只在拿得到微信通知时发：目的不是"弹我们的界面"，
+        // 而是亮屏 + 把微信真实的通话界面带到前台，好让模拟点击能落到微信上
+        if (openIntent != null) {
+            postCallNotification(app, openIntent);
+        }
 
         sHandler.postDelayed(sAnnounceLoop, 4000L);
         if (sSession.autoAnswer) {
@@ -118,16 +129,18 @@ public class CallSessionManager {
     public static synchronized void onIncomingViaA11y(Context ctx, String caller, boolean video) {
         Session s = sSession;
         if (s != null && !s.ended) return; // 通知已经先触发了，忽略
-        startCall(ctx, caller, video, null, false);
+        startCall(ctx, caller, video, null);
     }
 
-    /** 用户按下绿色大按钮 / 自动接听到时 */
+    /**
+     * 开始接听：把微信通话界面带到前台，然后模拟点击微信里真正的「接听」键。
+     * 本应用自己的界面已经没有了，这里点的是微信的按钮。
+     */
     public static synchronized void performAccept(boolean auto) {
         Session s = sSession;
         if (s == null || s.handled || s.ended) return;
         s.handled = true;
         stopSoundsAndVibration();
-        finishAlertActivity();
         cancelNotification();
 
         final PendingIntent pi = s.openIntent;
@@ -135,41 +148,24 @@ public class CallSessionManager {
         sHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (app == null) return;
-                // 先尝试拉起微信的来电界面（锁屏场景下它可能还没显示）
+                Session cur = sSession;
+                if (cur == null || cur.ended) return;
+                // 1) 锁屏/后台时微信的通话界面可能还没显示，先把它拉起来
                 if (pi != null) {
                     try { pi.send(); } catch (Exception ignore) {}
                 }
-                // 再自动点微信的「接听」按钮。
-                // 重试是必要的：微信来电界面往往比我们的界面晚几百毫秒才显示，
-                // 而点击前会校验「当前窗口必须是微信」，窗口没到位就点不到。
-                WeChatClicker.retryClick("接听", 6, 800);
+                // 2) 点微信里的「接听」。点击前会校验当前窗口属于微信，
+                //    所以窗口没到位时点了也没用，必须重试。
+                WeChatClicker.retryClick("接听", CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
+                        new WeChatClicker.Callback() {
+                            @Override
+                            public void onResult(boolean clicked) {
+                                if (!clicked) onAcceptFailed();
+                            }
+                        });
             }
         }, 500L);
         // 接通后由无障碍检测到「静音/免提」按钮 → onWeChatCallAnswered 清理；另有 3 分钟超时兜底
-    }
-
-    /** 用户按下红色挂断按钮 */
-    public static synchronized void performDecline() {
-        Session s = sSession;
-        if (s == null || s.handled || s.ended) return;
-        s.handled = true;
-        stopSoundsAndVibration();
-        finishAlertActivity();
-        cancelNotification();
-
-        final PendingIntent pi = s.openIntent;
-        final Context app = sApp;
-        sHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (app == null) return;
-                if (pi != null) {
-                    try { pi.send(); } catch (Exception ignore) {}
-                }
-                WeChatClicker.retryClick("挂断", 3, 600);
-            }
-        }, 400L);
     }
 
     /** 无障碍检测到通话已接通（出现静音/免提按钮） */
@@ -190,16 +186,16 @@ public class CallSessionManager {
         cleanup(ctx != null ? ctx.getApplicationContext() : sApp);
     }
 
-    /** 设置页「试听」：只播报一次 + 短震动，不弹真界面逻辑 */
+    /** 设置页「试听」：只播报一句 + 短震动，不涉及任何界面 */
     public static void startTestCall(Context ctx, String name, boolean video) {
         Context app = ctx.getApplicationContext();
         sApp = app;
-        final String text = name + "来" + (video ? "视频" : "语音") + "电话了。请点击绿色大按钮接听。";
+        final String text = name + "来" + (video ? "视频" : "语音") + "电话了。请点微信上的接听。";
         TtsSpeaker.init(app);
         TtsSpeaker.speak(text);
-        // 注意：这里不再「1.5 秒后就当没 TTS 并响铃」。
-        // 引擎冷启动常超过 1.5 秒，那样会误报且出现「铃声 + 语音同时响」。
-        // 现在由调用方轮询 TtsSpeaker.getState()，确认不可用后才调 fallbackToTestRingtone()。
+        // 说明：试听不响铃。以前响铃是因为有个界面可以关掉它，
+        // 现在没有界面了，铃声会一直响没人关，反而成了新问题。
+        // 语音确实不可用时，由设置页的状态卡与提示告诉用户原因。
         try {
             Vibrator v = (Vibrator) app.getSystemService(Context.VIBRATOR_SERVICE);
             if (v != null) {
@@ -210,72 +206,6 @@ public class CallSessionManager {
                 }
             }
         } catch (Exception ignore) {}
-    }
-
-    /** 试听界面关闭时调用，停止试听铃声 */
-    public static void stopTestSounds() {
-        stopTestRingtone();
-    }
-
-    /**
-     * 试听时，调用方轮询确认「中文语音确实不可用」后调用这里，再回退响铃。
-     * 避免引擎还在加载就提前响铃（会造成铃声与语音同时响的假象）。
-     */
-    public static void fallbackToTestRingtone() {
-        if (sApp == null) return;
-        if (TtsSpeaker.isUsable()) return; // 期间已就绪则无需响铃
-        startTestRingtone(sApp);
-    }
-
-    /** 试听无中文语音时的兜底：循环响系统铃声（不依赖语音引擎） */
-    private static void startTestRingtone(Context app) {
-        if (sTestRingtone != null) return;
-        try {
-            Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-            if (uri == null) return;
-            sTestRingtone = new MediaPlayer();
-            sTestRingtone.setDataSource(app, uri);
-            if (Build.VERSION.SDK_INT >= 21) {
-                sTestRingtone.setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build());
-            } else {
-                sTestRingtone.setAudioStreamType(android.media.AudioManager.STREAM_RING);
-            }
-            sTestRingtone.setLooping(true);
-            sTestRingtone.prepare();
-            sTestRingtone.start();
-        } catch (Exception ignore) {
-            sTestRingtone = null;
-        }
-    }
-
-    private static void stopTestRingtone() {
-        if (sTestRingtone != null) {
-            try {
-                sTestRingtone.stop();
-                sTestRingtone.release();
-            } catch (Exception ignore) {}
-            sTestRingtone = null;
-        }
-    }
-
-    // ---------------- 界面引用 ----------------
-
-    public static void setAlertActivity(CallAlertActivity a) {
-        sAlertActivity = a;
-    }
-
-    public static void clearAlertActivity(CallAlertActivity a) {
-        if (sAlertActivity == a) sAlertActivity = null;
-    }
-
-    private static void finishAlertActivity() {
-        if (sAlertActivity != null) {
-            try { sAlertActivity.finish(); } catch (Exception ignore) {}
-            sAlertActivity = null;
-        }
     }
 
     // ---------------- 内部实现 ----------------
@@ -309,6 +239,22 @@ public class CallSessionManager {
         }
     };
 
+    /**
+     * 自动点击没能落到微信的接听键上（例如微信界面始终没到前台、被系统拦截等）。
+     * 这时不能再装死：响铃 + 震动 + 语音，把老人叫过来自己点微信上的接听。
+     */
+    private static synchronized void onAcceptFailed() {
+        Session s = sSession;
+        if (s == null || s.ended) return;
+        // 放开 handled，让播报循环继续念「请点微信上的接听」，直到接通/挂断/超时
+        s.handled = false;
+        TtsSpeaker.speak("没接上。微信来电话了，请自己点一下接听。");
+        if (sApp != null) {
+            startRingtone(sApp);
+            startVibration(sApp);
+        }
+    }
+
     private static void announce() {
         Session s = sSession;
         if (s == null || s.ended || s.handled) return;
@@ -317,63 +263,47 @@ public class CallSessionManager {
         }
         StringBuilder sb = new StringBuilder();
         sb.append(s.caller).append("来").append(s.video ? "视频" : "语音").append("电话了。");
-        if (s.autoAnswer) {
-            long remain = (s.autoAnswerAt - System.currentTimeMillis()) / 1000L + 1;
-            sb.append(Math.max(1, remain)).append("秒后自动接听。不想接听，请按红色挂断。");
+        long remain = (s.autoAnswerAt - System.currentTimeMillis()) / 1000L + 1;
+        if (s.autoAnswer && remain > 0) {
+            sb.append(remain).append("秒后自动接听。不想接听，请按微信上的挂断。");
         } else {
-            sb.append("请点击绿色大按钮接听。");
+            sb.append("请点微信上的接听。");
         }
         TtsSpeaker.speak(sb.toString());
         sAnnounceCount++;
     }
 
-    private static void showOverlay(Context app) {
-        Session s = sSession;
-        if (s == null) return;
-        Intent it = new Intent(app, CallAlertActivity.class);
-        it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        it.putExtra("caller_name", s.caller);
-        it.putExtra("is_video", s.video);
-        it.putExtra("test_mode", s.test);
-        try {
-            app.startActivity(it);
-        } catch (Exception ignore) {
-            // 无后台弹界面权限时，靠下面的全屏通知兜底
-        }
-        postFullScreenNotification(app, it);
-    }
-
-    private static void postFullScreenNotification(Context app, Intent it) {
+    /**
+     * 发一条来电通知。
+     *
+     * 它不是为了「显示我们的界面」——我们自己已经没有任何界面了——
+     * 而是：① 让锁屏亮起来；② 点一下就能进微信真实的通话界面；
+     * ③ 把微信通话界面带到前台，模拟点击才落得到微信的接听键上。
+     */
+    private static void postCallNotification(Context app, PendingIntent wechatPi) {
         NotificationManager nm = (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null || sSession == null) return;
         try {
             if (Build.VERSION.SDK_INT >= 26) {
-                NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "来电大按钮提醒",
+                NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "微信来电提醒",
                         NotificationManager.IMPORTANCE_HIGH);
-                ch.setDescription("微信来电时弹出大按钮接听界面");
+                ch.setDescription("微信来电时提醒并可直接进入微信通话界面");
                 ch.setSound(null, null);
                 ch.enableVibration(false);
                 nm.createNotificationChannel(ch);
             }
-            int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
-            if (Build.VERSION.SDK_INT >= 23) {
-                piFlags |= PendingIntent.FLAG_IMMUTABLE;
-            }
-            PendingIntent pi = PendingIntent.getActivity(app, 3, it, piFlags);
             Notification.Builder b = Build.VERSION.SDK_INT >= 26
                     ? new Notification.Builder(app, CHANNEL_ID)
                     : new Notification.Builder(app);
             b.setSmallIcon(R.drawable.ic_call)
-                    .setContentTitle(sSession.caller + " 来电")
-                    .setContentText((sSession.video ? "视频" : "语音") + "通话 · 点击接听")
+                    .setContentTitle(sSession.caller + " 来电话了")
+                    .setContentText((sSession.video ? "视频" : "语音") + "通话 · 点这里进微信接听")
                     .setPriority(Notification.PRIORITY_MAX)
                     .setCategory(Notification.CATEGORY_CALL)
                     .setOngoing(true)
-                    .setContentIntent(pi)
-                    .setFullScreenIntent(pi, true);
-            nm.notify(FSI_NOTIFY_ID, b.build());
+                    .setContentIntent(wechatPi)
+                    .setFullScreenIntent(wechatPi, true);
+            nm.notify(CALL_NOTIFY_ID, b.build());
         } catch (Exception ignore) {}
     }
 
@@ -381,7 +311,7 @@ public class CallSessionManager {
         if (sApp == null) return;
         try {
             NotificationManager nm = (NotificationManager) sApp.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null) nm.cancel(FSI_NOTIFY_ID);
+            if (nm != null) nm.cancel(CALL_NOTIFY_ID);
         } catch (Exception ignore) {}
     }
 
@@ -397,8 +327,9 @@ public class CallSessionManager {
         } catch (Exception ignore) {}
     }
 
-    /** TTS 不可用时的兜底：循环响系统铃声 */
+    /** TTS 不可用 / 自动接听失败时的兜底：循环响系统铃声 */
     private static void startRingtone(Context app) {
+        if (sRingtone != null) return;
         try {
             Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
             if (uri == null) return;
@@ -453,8 +384,6 @@ public class CallSessionManager {
         sHandler.removeCallbacks(sAutoRun);
         sHandler.removeCallbacks(sTimeout);
         stopSoundsAndVibration();
-        stopTestRingtone();
-        finishAlertActivity();
         cancelNotification();
         if (sWakeLock != null) {
             try {

@@ -26,7 +26,7 @@ public class PermissionStatus {
                 + CallHelperAccessibilityService.class.getName());
     }
 
-    /** 悬浮窗（安卓 10+ 后台弹大按钮界面） */
+    /** 悬浮窗（安卓 10+ 后台把微信通话界面调到前台，自动点击才落得到微信上） */
     public static boolean isOverlay(Context ctx) {
         return Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(ctx);
     }

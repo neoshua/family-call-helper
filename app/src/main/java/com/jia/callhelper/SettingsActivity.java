@@ -168,7 +168,7 @@ public class SettingsActivity extends Activity {
             }
         });
 
-        // 安卓 13+ 通知运行时权限（弹大按钮通知需要）
+        // 安卓 13+ 通知运行时权限（发来电提醒通知需要）
         if (Build.VERSION.SDK_INT >= 33) {
             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {
@@ -260,33 +260,23 @@ public class SettingsActivity extends Activity {
 
     private void startTest() {
         TtsSpeaker.init(SettingsActivity.this);
+        // 只播报一句「张三来视频电话了」，不弹任何界面。
+        // （以前会弹一个全屏测试来电界面，但那个界面上的接听键是假的，已整体去掉）
         CallSessionManager.startTestCall(SettingsActivity.this, "张三", true);
-        // 轮询等待语音引擎：就绪就什么都不用做（语音会自动播）；
-        // 只有确认「确实不可用」才回退铃声并给准确原因，
-        // 避免引擎冷启动慢（>1.5s）时被误判成「没装 TTS」。
+        // 轮询等待语音引擎，好让下面的状态卡给出准确结论：
+        // 引擎冷启动常超过 1.5 秒，不等就下结论会误报「没装 TTS」。
         waitTtsForTest(0);
-        Intent it = new Intent(SettingsActivity.this, CallAlertActivity.class);
-        it.putExtra("caller_name", "张三（测试）");
-        it.putExtra("is_video", true);
-        it.putExtra("test_mode", true);
-        it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        startActivity(it);
     }
 
-    /** 试听时的引擎等待：最多 8 秒，确认不可用才回退响铃 */
+    /** 试听时的引擎等待：最多 8 秒，用来给状态卡一个准确结论 */
     private void waitTtsForTest(final int n) {
-        if (TtsSpeaker.isUsable()) {
-            CallSessionManager.stopTestSounds(); // 已就绪：确保没有残留铃声
-            updateTtsStatus();
-            return;
-        }
+        updateTtsStatus();
+        if (TtsSpeaker.isUsable()) return;
         if (n >= TTS_POLL_MAX) {
             if (TtsSpeaker.isUsable()) return;
-            CallSessionManager.fallbackToTestRingtone();
             updateTtsStatus();
             Toast.makeText(SettingsActivity.this,
-                    "这次没能用语音播报，已改用铃声。本页下面的「检测情况」可看到原因。",
+                    "这次没能用语音播报。本页下面的「检测情况」可看到原因。",
                     Toast.LENGTH_LONG).show();
             return;
         }
@@ -369,15 +359,16 @@ public class SettingsActivity extends Activity {
 
     private void refreshStatus() {
         setStatus(mStatusNotif, PermissionStatus.isNotificationListener(this),
-                "✓ 已开启（可以监听微信来电了）", "✗ 未开启，点下方按钮去开启");
+                "✓ 已开启（能发现微信来电）", "✗ 未开启，点下方按钮去开启");
         setStatus(mStatusAcc, PermissionStatus.isAccessibility(this),
-                "✓ 已开启（可以自动帮您点微信的接听键）", "✗ 未开启：只能播报和显示大按钮，无法自动接听");
+                "✓ 已开启（能自动帮您点微信的接听键）", "✗ 未开启：只能播报提醒，无法自动接听");
 
         View rowOverlay = findViewById(R.id.row_overlay);
         if (Build.VERSION.SDK_INT >= 23) {
             rowOverlay.setVisibility(View.VISIBLE);
             setStatus(mStatusOverlay, PermissionStatus.isOverlay(this),
-                    "✓ 已允许（来电时能弹出大按钮界面）", "✗ 未允许，来电时界面可能弹不出来");
+                    "✓ 已允许（来电时能把微信通话界面调到最前面，接听更容易成功）",
+                    "✗ 未允许：锁屏来电时微信界面可能调不到前台，自动接听容易失败");
         } else {
             rowOverlay.setVisibility(View.GONE);
         }
@@ -389,10 +380,11 @@ public class SettingsActivity extends Activity {
                 NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
                 boolean fsiOk = nm != null && nm.canUseFullScreenIntent();
                 setStatus(mStatusFsi, fsiOk,
-                        "✓ 已允许（锁屏来电也能弹大按钮界面）", "✗ 未允许：请为本应用和微信都打开「全屏通知」");
+                        "✓ 已允许（锁屏来电也能亮屏、直达微信接听）",
+                        "✗ 未允许：请为本应用打开「全屏通知」，否则锁屏来电可能不亮屏");
             } else {
                 setStatus(mStatusFsi, true,
-                        "默认开启；若锁屏时弹不出界面，请检查系统「全屏通知」设置", "");
+                        "默认开启；若锁屏来电不亮屏，请检查系统「全屏通知」设置", "");
             }
         } else {
             rowFsi.setVisibility(View.GONE);
