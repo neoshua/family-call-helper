@@ -96,13 +96,17 @@ jobs:
       # 发布到固定的 latest Release：直接挂 .apk（非 ZIP），永久可下载。
       # 该步骤在 GitHub 自己的 runner 上运行，能正常访问 releases 上传端点，
       # 不受本机/沙箱网络 DNS 限制影响。
-      - name: 发布到 Release (latest, 带版本号)
+      - name: 发布到 Release (latest, 版本号 1.x)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SRC="$(ls dist/*.apk | head -n1)"
-          # 版本号取 workflow 运行次数（每次推送自动 +1），保证单调递增
-          VER="${{ github.run_number }}"
+          # 主版本号 MAJOR：升到 2 时由人工把下面 MAJOR 改为 2，
+          # 并同步把 MINOR_BASE 设为当时构建号，使次版本从 1 重新开始（如 2.1）。
+          MAJOR=1
+          MINOR_BASE=8
+          RUN="${{ github.run_number }}"
+          VER="${MAJOR}.$(( RUN - MINOR_BASE ))"
           # 复制为带版本号的 ASCII 文件名，避免中文名被截断
           APK="dist/family-call-helper-v${VER}.apk"
           cp "$SRC" "$APK"
@@ -112,5 +116,5 @@ jobs:
           git push origin :refs/tags/latest || true
           gh release create latest "$APK" \
             --title "最新构建 v${VER}" \
-            --notes "版本 v${VER}（构建 #${VER}），基于提交 ${{ github.sha }} 自动构建。" \
+            --notes "版本 v${VER}（构建 #${RUN}），基于提交 ${{ github.sha }} 自动构建。" \
             --prerelease
