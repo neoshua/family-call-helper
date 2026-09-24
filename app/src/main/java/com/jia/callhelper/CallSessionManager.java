@@ -91,7 +91,9 @@ public class CallSessionManager {
         WhiteListManager.Entry match = test ? null : WhiteListManager.match(app, caller);
         int delay = WhiteListManager.prefs(app)
                 .getInt("auto_delay_sec", DEFAULT_AUTO_DELAY_SEC);
-        if (match != null && match.auto) {
+        // 自动接听需同时满足：总开关开启 + 该联系人标记了自动接听
+        boolean master = WhiteListManager.prefs(app).getBoolean("auto_answer_master", false);
+        if (match != null && match.auto && master) {
             sSession.autoAnswer = true;
             sSession.autoAnswerAt = System.currentTimeMillis() + delay * 1000L;
         }

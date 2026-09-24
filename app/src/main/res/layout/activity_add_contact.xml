@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:background="@android:color/white">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="添加家人"
+            android:textColor="@color/textMain"
+            android:textSize="30sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="他/她怎么称呼您？"
+            android:textColor="@color/textMain"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+
+        <EditText
+            android:id="@+id/input_name"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="8dp"
+            android:hint="如：大儿子、老伴"
+            android:inputType="text"
+            android:textSize="20sp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="微信备注名（选填）"
+            android:textColor="@color/textMain"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+
+        <EditText
+            android:id="@+id/input_wechat"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="8dp"
+            android:hint="填微信里的备注名，识别更准"
+            android:inputType="text"
+            android:textSize="20sp"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="22dp">
+
+            <Switch
+                android:id="@+id/sw_auto"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"/>
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginLeft="12dp"
+                android:text="这位家人来电自动接听"
+                android:textColor="@color/textMain"
+                android:textSize="19sp"/>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="开启后，该家人来电会在设定秒数后自动接通，老人不用碰手机。默认关，建议仅对最亲近的人开启。"
+            android:textColor="@color/textSub"
+            android:textSize="15sp"/>
+
+        <Button
+            android:id="@+id/btn_save"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:layout_marginTop="26dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="保存"
+            android:textColor="#FFFFFF"
+            android:textSize="22sp"/>
+
+        <Button
+            android:id="@+id/btn_cancel"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_btn_ghost"
+            android:stateListAnimator="@null"
+            android:text="取消"
+            android:textColor="@color/textMain"
+            android:textSize="20sp"/>
+    </LinearLayout>
+</ScrollView>

@@ -63,6 +63,26 @@ public class WhiteListManager {
         }
     }
 
+    /** 按 key 取单条联系人（用于详情/编辑页） */
+    public static Entry get(Context ctx, String key) {
+        Object v = prefs(ctx).getAll().get(key);
+        if (v == null) return null;
+        String[] parts = String.valueOf(v).split("\\|");
+        if (parts.length < 2) return null;
+        Entry e = new Entry();
+        e.key = key;
+        e.name = parts[0];
+        e.number = parts[1];
+        e.auto = parts.length >= 3 && "1".equals(parts[2]);
+        return e;
+    }
+
+    /** 修改联系人的称呼 / 微信备注名 / 自动接听 */
+    public static void update(Context ctx, String key, String name, String number, boolean auto) {
+        prefs(ctx).edit().putString(key,
+                name + "|" + (number == null ? "" : number) + "|" + (auto ? "1" : "0")).apply();
+    }
+
     /** 来电人是否在家人名单（按备注名精确/包含、号码包含匹配） */
     public static Entry match(Context ctx, String caller) {
         if (caller == null || caller.trim().isEmpty()) return null;

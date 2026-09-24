@@ -11,23 +11,14 @@
         android:orientation="vertical"
         android:padding="20dp">
 
-        <!-- 标题 -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:text="亲情接听助手"
+            android:text="设置"
             android:textColor="@color/textMain"
             android:textSize="32sp"
             android:textStyle="bold"/>
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="帮爸妈接听微信电话：大声播报 + 大按钮接听 + 家人来电自动接"
-            android:textColor="@color/textSub"
-            android:textSize="16sp"/>
 
         <View
             android:layout_width="match_parent"
@@ -36,21 +27,21 @@
             android:layout_marginBottom="6dp"
             android:background="#EEEEEE"/>
 
-        <!-- 第一步：通知使用权 -->
+        <!-- 必要权限 -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:text="第一步：开启「通知使用权」"
+            android:text="必要权限"
             android:textColor="@color/textMain"
-            android:textSize="20sp"
+            android:textSize="22sp"
             android:textStyle="bold"/>
 
         <TextView
             android:id="@+id/status_notification"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="10dp"
             android:textSize="17sp"/>
 
         <Button
@@ -60,33 +51,15 @@
             android:layout_marginTop="8dp"
             android:background="@drawable/bg_btn_primary"
             android:stateListAnimator="@null"
-            android:text="去开启"
+            android:text="去开启「通知使用权」"
             android:textColor="#FFFFFF"
             android:textSize="20sp"/>
-
-        <!-- 第二步：无障碍服务 -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="22dp"
-            android:text="第二步：开启「无障碍服务」"
-            android:textColor="@color/textMain"
-            android:textSize="20sp"
-            android:textStyle="bold"/>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:text="开启后，按下大按钮时才能自动帮您点微信里的接听键"
-            android:textColor="@color/textSub"
-            android:textSize="15sp"/>
 
         <TextView
             android:id="@+id/status_accessibility"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="18dp"
             android:textSize="17sp"/>
 
         <Button
@@ -96,11 +69,10 @@
             android:layout_marginTop="8dp"
             android:background="@drawable/bg_btn_primary"
             android:stateListAnimator="@null"
-            android:text="去开启"
+            android:text="去开启「无障碍服务」"
             android:textColor="#FFFFFF"
             android:textSize="20sp"/>
 
-        <!-- 第三步：悬浮窗权限（安卓 10 以下自动隐藏） -->
         <LinearLayout
             android:id="@+id/row_overlay"
             android:layout_width="match_parent"
@@ -108,19 +80,10 @@
             android:orientation="vertical">
 
             <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
-                android:text="第三步：允许「显示在其他应用上层」"
-                android:textColor="@color/textMain"
-                android:textSize="20sp"
-                android:textStyle="bold"/>
-
-            <TextView
                 android:id="@+id/status_overlay"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
+                android:layout_marginTop="18dp"
                 android:textSize="17sp"/>
 
             <Button
@@ -130,12 +93,11 @@
                 android:layout_marginTop="8dp"
                 android:background="@drawable/bg_btn_primary"
                 android:stateListAnimator="@null"
-                android:text="去开启"
+                android:text="去开启「显示在其他应用上层」"
                 android:textColor="#FFFFFF"
                 android:textSize="20sp"/>
         </LinearLayout>
 
-        <!-- 第四步：全屏通知（安卓 10+） -->
         <LinearLayout
             android:id="@+id/row_fullscreen"
             android:layout_width="match_parent"
@@ -143,27 +105,10 @@
             android:orientation="vertical">
 
             <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
-                android:text="第四步：允许「锁屏时全屏通知」"
-                android:textColor="@color/textMain"
-                android:textSize="20sp"
-                android:textStyle="bold"/>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="锁屏时来电也能弹出大按钮界面（含本应用和微信的权限）"
-                android:textColor="@color/textSub"
-                android:textSize="15sp"/>
-
-            <TextView
                 android:id="@+id/status_fullscreen"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
+                android:layout_marginTop="18dp"
                 android:textSize="17sp"/>
 
             <Button
@@ -173,7 +118,7 @@
                 android:layout_marginTop="8dp"
                 android:background="@drawable/bg_btn_primary"
                 android:stateListAnimator="@null"
-                android:text="去开启"
+                android:text="去开启「锁屏全屏通知」"
                 android:textColor="#FFFFFF"
                 android:textSize="20sp"/>
         </LinearLayout>
@@ -185,48 +130,104 @@
             android:layout_marginBottom="6dp"
             android:background="#EEEEEE"/>
 
-        <!-- 家人白名单 -->
+        <!-- 试听 -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:text="家人名单（语音会用这个称呼播报）"
+            android:text="试听效果"
             android:textColor="@color/textMain"
-            android:textSize="20sp"
+            android:textSize="22sp"
             android:textStyle="bold"/>
+
+        <Button
+            android:id="@+id/btn_test_voice"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="▶ 播放一段模拟来电（试听）"
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"/>
+
+        <!-- 媒体音量 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:text="媒体音量"
+            android:textColor="@color/textMain"
+            android:textSize="22sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:id="@+id/tv_volume_pct"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="@color/textSub"
+            android:textSize="18sp"/>
+
+        <SeekBar
+            android:id="@+id/seek_volume"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="4dp"/>
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:text="添加家人后：① 播报时直接说称呼，如「大儿子来电话了」；② 勾选「自动接听」的家人来电，几秒后自动接通，老人不用碰手机"
+            android:layout_marginTop="4dp"
+            android:text="语音播报走的是媒体音量，建议调大一些。"
             android:textColor="@color/textSub"
             android:textSize="15sp"/>
 
-        <EditText
-            android:id="@+id/input_name"
+        <View
             android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_marginTop="10dp"
-            android:hint="称呼（必填），如：大儿子"
-            android:inputType="text"
-            android:textSize="18sp"/>
+            android:layout_height="1dp"
+            android:layout_marginTop="26dp"
+            android:layout_marginBottom="6dp"
+            android:background="#EEEEEE"/>
 
-        <EditText
-            android:id="@+id/input_number"
-            android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_marginTop="8dp"
-            android:hint="微信备注名或手机号（选填，用于识别）"
-            android:inputType="text"
-            android:textSize="18sp"/>
+        <!-- 自动接听 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="自动接听"
+            android:textColor="@color/textMain"
+            android:textSize="22sp"
+            android:textStyle="bold"/>
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
             android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:gravity="center_vertical"
+            android:layout_marginTop="10dp">
+
+            <Switch
+                android:id="@+id/sw_auto_master"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"/>
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginLeft="12dp"
+                android:text="开启自动接听（仅对标记自动接听的家人生效）"
+                android:textColor="@color/textMain"
+                android:textSize="18sp"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="14dp">
 
             <TextView
                 android:layout_width="wrap_content"
@@ -268,24 +269,6 @@
                 android:textSize="16sp"/>
         </LinearLayout>
 
-        <Button
-            android:id="@+id/btn_add_whitelist"
-            android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_btn_primary"
-            android:stateListAnimator="@null"
-            android:text="＋ 添加到家人名单"
-            android:textColor="#FFFFFF"
-            android:textSize="20sp"/>
-
-        <LinearLayout
-            android:id="@+id/whitelist_container"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="vertical"/>
-
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
@@ -293,33 +276,21 @@
             android:layout_marginBottom="6dp"
             android:background="#EEEEEE"/>
 
-        <!-- 试听效果 -->
+        <!-- 后台运行 -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:text="试听效果"
+            android:text="保持后台运行"
             android:textColor="@color/textMain"
-            android:textSize="20sp"
+            android:textSize="22sp"
             android:textStyle="bold"/>
 
-        <Button
-            android:id="@+id/btn_test_voice"
-            android:layout_width="match_parent"
-            android:layout_height="60dp"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_btn_primary"
-            android:stateListAnimator="@null"
-            android:text="▶ 播放一段模拟来电（试听）"
-            android:textColor="#FFFFFF"
-            android:textSize="20sp"/>
-
-        <!-- 后台保活 -->
         <Button
             android:id="@+id/btn_open_battery"
             android:layout_width="match_parent"
             android:layout_height="60dp"
-            android:layout_marginTop="14dp"
+            android:layout_marginTop="10dp"
             android:background="@drawable/bg_btn_ghost"
             android:stateListAnimator="@null"
             android:text="去设置「自启动 / 后台运行」（防杀后台）"
@@ -332,7 +303,7 @@
             android:layout_marginTop="26dp"
             android:layout_marginBottom="20dp"
             android:gravity="center"
-            android:text="亲情接听助手 v1.0 · 仅在本地运行，不联网、不上传数据"
+            android:text="亲情接听助手 · 仅在本地运行，不联网、不上传数据"
             android:textColor="#BBBBBB"
             android:textSize="14sp"/>
     </LinearLayout>

@@ -144,6 +144,11 @@ public class CallAlertActivity extends Activity {
     }
 
     @Override
+    public void onBackPressed() {
+        // 防误触：屏蔽系统返回键，避免老人在来电界面误按返回而挂断
+    }
+
+    @Override
     protected void onDestroy() {
         if (mTest) {
             CallSessionManager.stopTestSounds(); // 关闭试听界面时停掉兜底铃声

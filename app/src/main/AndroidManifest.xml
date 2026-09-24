@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jia.callhelper"
-    android:versionCode="1"
-    android:versionName="1.0.0">
+    android:versionCode="2"
+    android:versionName="1.1.0">
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34"/>
 
@@ -25,8 +25,8 @@
         android:allowBackup="true"
         android:theme="@style/AppTheme">
 
-        <!-- 设置主界面（启动器入口） -->
-        <activity android:name=".SettingsActivity"
+        <!-- 首页（启动器入口）：只展示家人联系人 -->
+        <activity android:name=".HomeActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboardHidden">
@@ -35,6 +35,22 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- 设置页：从首页「⚙ 设置」进入 -->
+        <activity android:name=".SettingsActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden"/>
+
+        <!-- 添加家人 -->
+        <activity android:name=".AddContactActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"/>
+
+        <!-- 家人详情 / 编辑 / 删除 -->
+        <activity android:name=".ContactDetailActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"/>
 
         <!-- 全屏大按钮来电界面：锁屏之上显示、亮屏、常亮 -->
         <activity android:name=".CallAlertActivity"

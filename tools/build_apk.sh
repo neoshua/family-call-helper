@@ -39,7 +39,7 @@ rm -rf build/*.apk
     --java build/gen \
     --auto-add-overlay \
     --min-sdk-version 21 --target-sdk-version 34 \
-    --version-code 1 --version-name 1.0.0 \
+    --version-code 2 --version-name 1.1.0 \
     build/res.zip
 
 # 3. 编译 Java
@@ -64,11 +64,11 @@ if [ ! -f tools/keystore.jks ]; then
         -dname "CN=Family Call Helper, OU=Family, O=Home, L=Beijing, ST=Beijing, C=CN"
 fi
 "$APKSIGNER" sign --ks tools/keystore.jks --ks-pass pass:callhelper2024 \
-    --key-pass pass:callhelper2024 --out "dist/亲情接听助手-v1.0.apk" build/aligned.apk
+    --key-pass pass:callhelper2024 --out "dist/亲情接听助手-v1.1.apk" build/aligned.apk
 
 # 7. 验证
-"$APKSIGNER" verify --print-certs "dist/亲情接听助手-v1.0.apk"
-"$AAPT2" dump badging "dist/亲情接听助手-v1.0.apk" | head -8
+"$APKSIGNER" verify --print-certs "dist/亲情接听助手-v1.1.apk"
+"$AAPT2" dump badging "dist/亲情接听助手-v1.1.apk" | head -8
 
 echo ""
-echo "✅ 构建完成: dist/亲情接听助手-v1.0.apk"
+echo "✅ 构建完成: dist/亲情接听助手-v1.1.apk"
