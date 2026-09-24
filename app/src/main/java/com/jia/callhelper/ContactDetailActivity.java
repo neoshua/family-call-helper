@@ -5,6 +5,8 @@ import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -41,7 +43,21 @@ public class ContactDetailActivity extends Activity {
         mWechat.setText(mEntry.number);
         mAuto.setChecked(mEntry.auto);
 
-        ((Button) findViewById(R.id.btn_save)).setOnClickListener(new View.OnClickListener() {
+        final Button btnSave = (Button) findViewById(R.id.btn_save);
+        // 称呼清空时禁用保存按钮，避免把家人名称改成空
+        btnSave.setEnabled(!mName.getText().toString().trim().isEmpty());
+        mName.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override
+            public void afterTextChanged(Editable s) {
+                btnSave.setEnabled(!s.toString().trim().isEmpty());
+            }
+        });
+
+        btnSave.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 save();

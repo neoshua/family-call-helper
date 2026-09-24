@@ -3,6 +3,8 @@ package com.jia.callhelper;
 import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -28,7 +30,21 @@ public class AddContactActivity extends Activity {
         mAuto = (Switch) findViewById(R.id.sw_auto);
         mAuto.setChecked(false); // 默认关，避免误接隐私通话
 
-        ((Button) findViewById(R.id.btn_save)).setOnClickListener(new View.OnClickListener() {
+        final Button btnSave = (Button) findViewById(R.id.btn_save);
+        // 称呼为空时禁用保存按钮，老人无法提交空联系人；输入后自动恢复可用
+        btnSave.setEnabled(!mName.getText().toString().trim().isEmpty());
+        mName.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override
+            public void afterTextChanged(Editable s) {
+                btnSave.setEnabled(!s.toString().trim().isEmpty());
+            }
+        });
+
+        btnSave.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 save();

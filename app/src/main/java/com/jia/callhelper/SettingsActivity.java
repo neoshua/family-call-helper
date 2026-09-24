@@ -180,9 +180,20 @@ public class SettingsActivity extends Activity {
     }
 
     private void saveDelay() {
+        String raw = mDelay.getText().toString().trim();
+        if (raw.isEmpty()) {
+            // 输入框不能为空：报错并回填已保存的值，不允许存空
+            int saved = WhiteListManager.prefs(this)
+                    .getInt("auto_delay_sec", CallSessionManager.DEFAULT_AUTO_DELAY_SEC);
+            mDelay.setText(String.valueOf(saved));
+            mDelay.requestFocus();
+            mDelay.selectAll();
+            Toast.makeText(this, "等待秒数不能为空，已恢复为 " + saved + " 秒", Toast.LENGTH_SHORT).show();
+            return;
+        }
         int d;
         try {
-            d = Integer.parseInt(mDelay.getText().toString().trim());
+            d = Integer.parseInt(raw);
         } catch (NumberFormatException e) {
             d = CallSessionManager.DEFAULT_AUTO_DELAY_SEC;
         }
