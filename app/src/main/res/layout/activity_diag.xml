@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@android:color/white">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="18dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="运行记录"
+            android:textColor="@color/textMain"
+            android:textSize="28sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="这里记录每次微信来电时 App 的判断过程。如果电话来了没有自动接听，看一眼最后几行就知道卡在哪：没收到通知？不在家人名单？还是点击没落到微信上。"
+            android:textColor="@color/textSub"
+            android:textSize="15sp"/>
+    </LinearLayout>
+
+    <ScrollView
+        android:id="@+id/diag_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:padding="12dp"
+        android:background="#F7F7F7">
+
+        <TextView
+            android:id="@+id/diag_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:lineSpacingExtra="3dp"
+            android:textColor="#222222"
+            android:textIsSelectable="true"
+            android:textSize="13sp"
+            android:typeface="monospace"/>
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="12dp"
+        android:background="#FFFFFF">
+
+        <Button
+            android:id="@+id/btn_diag_refresh"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:layout_marginRight="8dp"
+            android:background="@drawable/bg_btn_ghost"
+            android:stateListAnimator="@null"
+            android:text="↻ 刷新"
+            android:textColor="@color/textMain"
+            android:textSize="18sp"/>
+
+        <Button
+            android:id="@+id/btn_diag_copy"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:layout_marginRight="8dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="复制全部"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"/>
+
+        <Button
+            android:id="@+id/btn_diag_clear"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_btn_ghost"
+            android:stateListAnimator="@null"
+            android:text="清空"
+            android:textColor="@color/textMain"
+            android:textSize="18sp"/>
+    </LinearLayout>
+</LinearLayout>

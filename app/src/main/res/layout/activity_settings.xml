@@ -328,6 +328,42 @@
             android:textColor="@color/textMain"
             android:textSize="18sp"/>
 
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="26dp"
+            android:layout_marginBottom="6dp"
+            android:background="#EEEEEE"/>
+
+        <!-- 排查问题：来电没接上时，先看运行记录 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="接不到电话时看这里"
+            android:textColor="@color/textMain"
+            android:textSize="22sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:id="@+id/status_auto_summary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:lineSpacingExtra="4dp"
+            android:textSize="17sp"/>
+
+        <Button
+            android:id="@+id/btn_open_diag"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="📋 查看运行记录（排查没自动接听）"
+            android:textColor="#FFFFFF"
+            android:textSize="19sp"/>
+
         <TextView
             android:id="@+id/tv_about"
             android:layout_width="match_parent"

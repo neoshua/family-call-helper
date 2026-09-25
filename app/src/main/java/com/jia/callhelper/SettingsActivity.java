@@ -35,6 +35,7 @@ public class SettingsActivity extends Activity {
     private TextView mStatusOverlay;
     private TextView mStatusFsi;
     private TextView mStatusTts;
+    private TextView mStatusAutoSummary;
     private SeekBar mVolume;
     private TextView mVolumePct;
     private Switch mAutoMaster;
@@ -51,6 +52,7 @@ public class SettingsActivity extends Activity {
         mStatusOverlay = (TextView) findViewById(R.id.status_overlay);
         mStatusFsi = (TextView) findViewById(R.id.status_fullscreen);
         mStatusTts = (TextView) findViewById(R.id.status_tts);
+        mStatusAutoSummary = (TextView) findViewById(R.id.status_auto_summary);
         mVolume = (SeekBar) findViewById(R.id.seek_volume);
         mVolumePct = (TextView) findViewById(R.id.tv_volume_pct);
         mAutoMaster = (Switch) findViewById(R.id.sw_auto_master);
@@ -135,6 +137,12 @@ public class SettingsActivity extends Activity {
                 openBatterySettings();
             }
         });
+        bind(R.id.btn_open_diag, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(SettingsActivity.this, DiagActivity.class));
+            }
+        });
 
         // 媒体音量（语音播报走媒体通道）
         final AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
@@ -167,6 +175,8 @@ public class SettingsActivity extends Activity {
                         Toast.LENGTH_SHORT).show();
             }
         });
+
+        CallDiag.init(this);
 
         // 安卓 13+ 通知运行时权限（发来电提醒通知需要）
         if (Build.VERSION.SDK_INT >= 33) {
@@ -391,6 +401,61 @@ public class SettingsActivity extends Activity {
         }
 
         updateTtsStatus();
+        updateAutoSummary();
+        logEnvOnce();
+    }
+
+    private static String sLastEnv;
+
+    /** 把当前环境状态记进运行记录（只在变化时记一条，避免刷屏） */
+    private void logEnvOnce() {
+        int total = 0, autoOn = 0;
+        for (WhiteListManager.Entry e : WhiteListManager.load(this)) {
+            total++;
+            if (e.auto) autoOn++;
+        }
+        String env = "通知使用权=" + PermissionStatus.isNotificationListener(this)
+                + " 无障碍=" + PermissionStatus.isAccessibility(this)
+                + " 悬浮窗=" + PermissionStatus.isOverlay(this)
+                + " 全屏通知=" + PermissionStatus.isFullScreenIntent(this)
+                + " 自动接听总开关=" + WhiteListManager.prefs(this).getBoolean("auto_answer_master", false)
+                + " 家人=" + total + "人(开自动接听" + autoOn + "人)";
+        if (!env.equals(sLastEnv)) {
+            sLastEnv = env;
+            CallDiag.log("环境", env);
+        }
+    }
+
+    /**
+     * 「为什么没自动接听」的三个必要条件，直接写在设置页上。
+     * 之前这三项分散在两个页面，很容易漏掉其中一项，然后误以为 App 坏了。
+     */
+    private void updateAutoSummary() {
+        if (mStatusAutoSummary == null) return;
+        boolean master = WhiteListManager.prefs(this).getBoolean("auto_answer_master", false);
+        int total = 0, autoOn = 0;
+        for (WhiteListManager.Entry e : WhiteListManager.load(this)) {
+            total++;
+            if (e.auto) autoOn++;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("自动接听总开关：").append(master ? "已开启" : "未开启");
+        sb.append("\n家人名单：").append(total).append(" 人，其中 ").append(autoOn).append(" 人开了自动接听");
+        boolean ready = master && autoOn > 0;
+        if (!ready) {
+            sb.append("\n⚠ 现在来电只会播报提醒，不会自动接听。");
+            if (total == 0) {
+                sb.append("请先回首页「添加家人」。");
+            } else if (autoOn == 0) {
+                sb.append("请进家人详情，把「自动接听」打开。");
+            } else {
+                sb.append("请打开上面的总开关。");
+            }
+        } else {
+            sb.append("\n✓ 名单里的家人来电会自动接听。");
+        }
+        mStatusAutoSummary.setText(sb.toString());
+        mStatusAutoSummary.setTextColor(ready ? 0xFF1B7F3B : 0xFFB3261E);
     }
 
     private void setStatus(TextView tv, boolean ok, String good, String bad) {

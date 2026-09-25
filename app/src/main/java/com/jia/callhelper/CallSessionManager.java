@@ -1,5 +1,6 @@
 package com.jia.callhelper;
 
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -80,6 +81,7 @@ public class CallSessionManager {
     public static synchronized void startCall(Context ctx, String caller, boolean video,
                                               PendingIntent openIntent) {
         Context app = ctx.getApplicationContext();
+        CallDiag.init(app);
         Session old = sSession;
         // 同一个人的重复通知（微信会刷新来电通知）直接忽略。
         // 注意这里不排除 handled 的会话：自动接听的点击重试正在进行时，
@@ -94,6 +96,7 @@ public class CallSessionManager {
         sApp = app;
         sSession = new Session(caller, video, openIntent);
         sAnnounceCount = 0;
+        WeChatClicker.reset();
 
         WhiteListManager.Entry match = WhiteListManager.match(app, caller);
         int delay = WhiteListManager.prefs(app)
@@ -104,6 +107,22 @@ public class CallSessionManager {
             sSession.autoAnswer = true;
             sSession.autoAnswerAt = System.currentTimeMillis() + delay * 1000L;
         }
+        // 把「这次为什么接 / 为什么不接」记下来：这是排查「没自动接听」的第一现场
+        StringBuilder why = new StringBuilder();
+        why.append("来电：").append(caller).append("（").append(video ? "视频" : "语音").append("）")
+                .append(" 名单命中=").append(match != null ? match.name : "无")
+                .append(" 该联系人开自动接听=").append(match != null && match.auto)
+                .append(" 总开关=").append(master);
+        if (sSession.autoAnswer) {
+            why.append(" → ").append(delay).append(" 秒后自动接听");
+        } else if (match == null) {
+            why.append(" → 只播报：这个人不在家人名单里");
+        } else if (!match.auto) {
+            why.append(" → 只播报：该联系人的「自动接听」没打开");
+        } else {
+            why.append(" → 只播报：设置页的「自动接听」总开关没打开");
+        }
+        CallDiag.log("来电", why.toString());
 
         acquireWakeLock(app);
         startVibration(app);
@@ -144,23 +163,44 @@ public class CallSessionManager {
         cancelNotification();
 
         final PendingIntent pi = s.openIntent;
-        final Context app = sApp;
         sHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
                 Session cur = sSession;
                 if (cur == null || cur.ended) return;
-                // 1) 锁屏/后台时微信的通话界面可能还没显示，先把它拉起来
-                if (pi != null) {
-                    try { pi.send(); } catch (Exception ignore) {}
+
+                // 0) 先记录现场：锁屏状态下模拟点击会被系统拦下，这是「点了没反应」的常见原因
+                boolean locked = false;
+                try {
+                    KeyguardManager km = (KeyguardManager) sApp.getSystemService(Context.KEYGUARD_SERVICE);
+                    locked = km != null && km.isKeyguardLocked();
+                } catch (Exception ignore) {}
+                CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+                boolean wechatFront = svc != null && svc.isWeChatForeground();
+                CallDiag.log("接听", "准备接听：无障碍=" + (svc != null)
+                        + " 微信在前台=" + wechatFront + " 锁屏=" + locked);
+
+                // 1) 微信通话界面不在最前面时，用微信自己的通知跳转把它拉起来。
+                //    界面不到前台，任何点击都落不到微信的接听键上。
+                if (!wechatFront && pi != null) {
+                    try {
+                        pi.send();
+                        CallDiag.log("接听", "微信不在前台，已发送通知跳转尝试拉起微信通话界面");
+                    } catch (Exception e) {
+                        CallDiag.log("接听", "拉起微信失败：" + e);
+                    }
                 }
-                // 2) 点微信里的「接听」。点击前会校验当前窗口属于微信，
-                //    所以窗口没到位时点了也没用，必须重试。
-                WeChatClicker.retryClick("接听", CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
+
+                // 2) 交给点击器：三级定位 + 校验 + 失败兜底
+                WeChatClicker.answerWithRetry(CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
                         new WeChatClicker.Callback() {
                             @Override
                             public void onResult(boolean clicked) {
-                                if (!clicked) onAcceptFailed();
+                                if (clicked) {
+                                    CallDiag.log("接听", "接听流程结束：已接上或已尽力");
+                                } else {
+                                    onAcceptFailed();
+                                }
                             }
                         });
             }
@@ -172,6 +212,7 @@ public class CallSessionManager {
     public static synchronized void onWeChatCallAnswered(Context ctx) {
         Session s = sSession;
         if (s == null || s.ended) return;
+        CallDiag.log("会话", "检测到通话已接通，清理提醒");
         s.ended = true;
         s.handled = true;
         cleanup(ctx != null ? ctx.getApplicationContext() : sApp);
@@ -246,6 +287,7 @@ public class CallSessionManager {
     private static synchronized void onAcceptFailed() {
         Session s = sSession;
         if (s == null || s.ended) return;
+        CallDiag.log("接听", "自动接听失败，转为响铃提醒老人自己点");
         // 放开 handled，让播报循环继续念「请点微信上的接听」，直到接通/挂断/超时
         s.handled = false;
         TtsSpeaker.speak("没接上。微信来电话了，请自己点一下接听。");

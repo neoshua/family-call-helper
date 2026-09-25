@@ -29,6 +29,7 @@ public class HomeActivity extends Activity {
 
         mBanner = (LinearLayout) findViewById(R.id.banner);
         mList = (LinearLayout) findViewById(R.id.list_container);
+        CallDiag.init(this);
 
         // 安卓 13+ 通知运行时权限（发来电提醒通知需要）
         if (Build.VERSION.SDK_INT >= 33) {
@@ -66,15 +67,42 @@ public class HomeActivity extends Activity {
         renderList();
     }
 
+    /**
+     * 顶部横幅：把「来电可能不生效」的原因一次说清。
+     * 除了权限，还要提示「自动接听没配好」——之前总开关和联系人开关分在两个页面，
+     * 漏掉任何一项都表现为「电话来了 App 没反应」，很容易被当成程序坏了。
+     */
     private void refreshBanner() {
         int missing = PermissionStatus.countMissing(this);
-        if (missing > 0) {
-            mBanner.setVisibility(View.VISIBLE);
-            TextView t = (TextView) mBanner.findViewById(R.id.banner_text);
-            t.setText("有 " + missing + " 项必要权限未开启，来电可能无法正常提醒。点这里去设置");
-        } else {
-            mBanner.setVisibility(View.GONE);
+        int total = 0, autoOn = 0;
+        for (WhiteListManager.Entry e : WhiteListManager.load(this)) {
+            total++;
+            if (e.auto) autoOn++;
         }
+        boolean master = WhiteListManager.prefs(this).getBoolean("auto_answer_master", false);
+
+        StringBuilder sb = new StringBuilder();
+        if (missing > 0) {
+            sb.append("有 ").append(missing).append(" 项必要权限未开启，来电可能无法正常提醒。");
+        }
+        if (total == 0) {
+            if (sb.length() > 0) sb.append("\n");
+            sb.append("还没有添加家人：来电只会播报，不会自动接听。");
+        } else if (autoOn == 0) {
+            if (sb.length() > 0) sb.append("\n");
+            sb.append("没有家人开启「自动接听」：请进家人详情打开。");
+        } else if (!master) {
+            if (sb.length() > 0) sb.append("\n");
+            sb.append("设置里的「自动接听」总开关没打开。");
+        }
+
+        if (sb.length() == 0) {
+            mBanner.setVisibility(View.GONE);
+            return;
+        }
+        mBanner.setVisibility(View.VISIBLE);
+        TextView t = (TextView) mBanner.findViewById(R.id.banner_text);
+        t.setText(sb.append("\n点这里去设置").toString());
     }
 
     private void renderList() {

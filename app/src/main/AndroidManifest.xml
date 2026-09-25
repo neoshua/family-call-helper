@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jia.callhelper"
-    android:versionCode="14"
-    android:versionName="1.6">
+    android:versionCode="17"
+    android:versionName="1.9">
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34"/>
 
@@ -58,6 +58,11 @@
 
         <!-- 家人详情 / 编辑 / 删除 -->
         <activity android:name=".ContactDetailActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"/>
+
+        <!-- 运行记录：来电没自动接听时，用来查看每一步的判断结果 -->
+        <activity android:name=".DiagActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden"/>
 

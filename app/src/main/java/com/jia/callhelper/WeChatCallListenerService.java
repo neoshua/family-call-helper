@@ -21,6 +21,22 @@ public class WeChatCallListenerService extends NotificationListenerService {
             "已取消", "已拒绝", "已结束", "已挂断", "未接听", "已过期", "已超时"
     };
 
+    /**
+     * 「一定是在响铃的来电邀请」的特征话术。命中就直接认定为来电，
+     * 不再去看通知的 ongoing / 优先级 / 渠道名。
+     *
+     * 为什么必须这样放松：安卓 8.0 起通知优先级由 NotificationChannel 决定，
+     * Notification.priority 恒为默认值 0；微信不同版本的渠道名也不一样
+     * （voip_notify / message_voip / 视频通话…）。原来要求「必须 ongoing 或
+     * 高优先级或渠道名含 voip」才算来电，会把这些特征都不满足的来电通知
+     * 当成普通消息丢掉 —— 结果就是「来电了但 App 完全没反应」。
+     */
+    private static final String[] STRONG_INVITE = {
+            "邀请你视频通话", "邀请你语音通话", "邀请你通话",
+            "邀请你进行视频通话", "邀请你进行语音通话",
+            "邀请你视频", "邀请你语音", "邀请你接听"
+    };
+
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         try {
@@ -40,19 +56,46 @@ public class WeChatCallListenerService extends NotificationListenerService {
         String all = (title + " " + text + " " + bigText + " " + ticker).trim();
         if (all.isEmpty()) return;
 
+        CallDiag.init(this);
+        // 只把「与通话有关」的通知写进运行记录，普通聊天消息不记，避免日志被刷爆
+        boolean callRelated = all.contains("通话") || all.contains("邀请");
+        String channel = "";
+        try {
+            channel = n.getChannelId() == null ? "" : n.getChannelId();
+        } catch (Exception ignore) {}
+
         // 1. 结束类通知：停止播报、清理会话
         if (isEndMessage(all)) {
+            if (callRelated) {
+                CallDiag.log("通知", "结束类通知：" + shortOf(all) + " → 清理会话");
+            }
             CallSessionManager.onWeChatCallEnded(this, all);
             return;
         }
 
         // 2. 来电邀请类通知
-        if (!isIncomingInvite(all, n)) return;
+        if (!isIncomingInvite(all, n)) {
+            if (callRelated) {
+                CallDiag.log("通知", "与通话有关但未认定为来电邀请：" + shortOf(all)
+                        + "（渠道=" + channel + " flags=" + n.flags + "）");
+            }
+            return;
+        }
 
         String caller = resolveCaller(title, text, bigText, ticker);
         boolean video = all.contains("视频");
         PendingIntent pi = n.contentIntent;
+        CallDiag.log("通知", "认定为来电邀请：" + shortOf(all)
+                + " → 来电人=" + caller + " 视频=" + video
+                + "（渠道=" + channel + " flags=" + n.flags + "）");
         CallSessionManager.startCall(this, caller, video, pi);
+    }
+
+    /** 日志里只留个短摘要，避免长文本把记录挤爆 */
+    private static String shortOf(String s) {
+        if (s == null) return "";
+        s = s.replace('\n', ' ').trim();
+        return s.length() > 60 ? s.substring(0, 60) + "…" : s;
     }
 
     private boolean isEndMessage(String s) {
@@ -71,6 +114,11 @@ public class WeChatCallListenerService extends NotificationListenerService {
      */
     private boolean isIncomingInvite(String s, Notification n) {
         if (!s.contains("邀请") || !s.contains("通话")) return false;
+        // 强特征命中：直接认定为来电，不再要求 ongoing / 高优先级 / 渠道名。
+        // 这些附加条件在真机上并不可靠（理由见 STRONG_INVITE 的注释）。
+        for (String k : STRONG_INVITE) {
+            if (s.contains(k)) return true;
+        }
         if (n.flags != 0 && (n.flags & Notification.FLAG_ONGOING_EVENT) != 0) return true;
         if (n.priority >= Notification.PRIORITY_HIGH) return true;
         try {
