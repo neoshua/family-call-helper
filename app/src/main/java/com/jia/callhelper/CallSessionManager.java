@@ -86,6 +86,8 @@ public class CallSessionManager {
         public volatile boolean fullScreenSeen = false; // 是否出现过"全屏来电界面"（决定指引画圈还是只提示）
         public volatile int goneTicks = 0;   // 连续几次没看到微信来电界面
         public volatile int modeTicks = 0;   // 连续几次检测到系统音频处于通话状态
+        /** 连续几次确认"通知消失"（见 sNotifyGoneConfirm：只用来记日志/调试） */
+        public volatile int notifyGoneTicks = 0;
         /** 自动接听失败后的重试次数（见 sRetryAccept）。微信界面常比通知晚出现，不重试就会错过整通电话 */
         public volatile int retryCount = 0;
 
@@ -183,8 +185,9 @@ public class CallSessionManager {
         if (sSession.autoAnswer) {
             why.append(" → ").append(delay).append(" 秒后自动接听");
         } else if (match == null) {
-            why.append(" → 只提醒：这个人不在家人名单里。微信显示的是「").append(caller)
-                    .append("」，请到设置→添加家人，把「").append(caller)
+            why.append(" → 只提醒：这个人不在家人名单里。").append(
+                    WhiteListManager.explainNoMatch(app, caller));
+            why.append("。请到设置→添加家人，把「").append(caller)
                     .append("」填进他的「微信备注名」（只填「称呼」匹配不上）。");
         } else if (!match.auto) {
             why.append(" → 只提醒：联系人是「").append(match.name)
@@ -323,7 +326,23 @@ public class CallSessionManager {
 
     /** 一次来电里最多尝试几种"把微信来电页拉起来并接听"的轮次（每轮约 1.2 秒） */
     private static final int MAX_PULL_ATTEMPTS = 8;
-    private static final long PULL_INTERVAL_MS = 1200L;
+    /**
+     * 【v1.14 关键修复】外层的"拉全屏"轮次间隔必须 **大于** 内层点击链跑完的时间。
+     *
+     * 这是之前"看着一直在重试、却始终没接上"的真正原因：
+     *   内层 WeChatClicker.answerWithRetry 一次要跑 8 次 × 800ms = 6.4 秒，
+     *   再算上点击后 1.2 秒的"是否接通"校验，一轮完整流程约 8 秒；
+     *   而外层原来每 1.2 秒就又调一次 answerWithRetry —— 而 answerWithRetry
+     *   开头会 cancel() 掉上一轮还在排队的所有回拨。
+     * 结果就是：内层点击链每隔 1.2 秒被拦腰砍断一次，永远跑不到"校验是否接通"
+     * 那一步，于是既接不上、也没有任何失败结论返回给上层。
+     * 外层自己却按 1.2 秒把 8 次轮次耗光，约 10 秒后就放弃了。
+     *
+     * 现在改为：外层等内层**有结论了**才回调决定是否再来一轮
+     * （见 onResult 里的 postDelayed），所以这里的间隔只作为"兜底最小间隔"，
+     * 用来应对内层因异常一次回调都没发出的情况。
+     */
+    private static final long PULL_INTERVAL_MS = 1500L;
     private static int sPullAttempt = 0;
 
     private static final Runnable sEnsureFullScreen = new Runnable() {
@@ -407,12 +426,27 @@ public class CallSessionManager {
         // 这个决定是有意的：判定失灵时，等待等于永远不点（用户实测就是这个结果）。
         // 而此刻屏幕上就是微信来电页，右下角必然是接听键，点了不会伤到别的应用。
         // WeChatClicker 内部还会再校验一次窗口归属，不满足条件它自己会拒绝点。
+        sClickCallbackFired = false;
+
+        // 【v1.14】兜底看门狗：内层点击链理论上一定会回调，
+        // 但它内部有 cancel()/异常等分支，真机上出现过"一个回调都没发出"的情况——
+        // 那样外层就永远在等，整通电话再也不会尝试，表现就是"完全没自动接听"。
+        // 所以这里排一个超时：到点还没收到内层结论，就自己进入下一轮。
+        final int attemptAtStart = sPullAttempt;
+        sHandler.removeCallbacks(sClickWatchdog);
+        sHandler.postDelayed(sClickWatchdog, CLICK_CHAIN_BUDGET_MS);
+
         WeChatClicker.answerWithRetry(CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
                 new WeChatClicker.Callback() {
                     @Override
                     public void onResult(boolean clicked) {
                         Session cur = sSession;
                         if (cur == null || cur.ended) return;
+                        // 只有"当前这一轮"的回调才算数：看门狗已经代跑过一轮时，
+                        // 迟到的旧回调不能再驱动流程，否则会重复推进轮次。
+                        if (attemptAtStart != sPullAttempt) return;
+                        sClickCallbackFired = true;
+                        sHandler.removeCallbacks(sClickWatchdog);
                         if (clicked) {
                             CallDiag.log("接听", "接听流程结束：已接上");
                             return;
@@ -428,6 +462,33 @@ public class CallSessionManager {
                     }
                 });
     }
+
+    /** 内层点击链一次完整流程的时间上限（8 次 × 800ms + 校验余量 ≈ 9 秒，这里留到 11 秒） */
+    private static final long CLICK_CHAIN_BUDGET_MS = 11_000L;
+
+    /** 本轮是否已收到内层点击链的结论（看门狗据此判断要不要代跑） */
+    private static volatile boolean sClickCallbackFired = false;
+
+    /**
+     * 点击链看门狗：内层没能按时给出结论时，由它推进到下一轮，
+     * 避免"内层卡住 → 外层一直等 → 整通电话不再尝试"。
+     */
+    private static final Runnable sClickWatchdog = new Runnable() {
+        @Override
+        public void run() {
+            Session s = sSession;
+            if (s == null || s.ended || s.answered) return;
+            if (sClickCallbackFired) return;   // 内层正常回调过了，看门狗不干预
+            CallDiag.log("接听", "点击链 " + (CLICK_CHAIN_BUDGET_MS / 1000)
+                    + " 秒内没有结论（内层可能被阻塞）→ 看门狗接管，进入下一轮");
+            if (sPullAttempt >= MAX_PULL_ATTEMPTS) {
+                CallDiag.log("接听", "看门狗：已用尽 " + MAX_PULL_ATTEMPTS + " 轮 → 交给老人自己点");
+                onAcceptFailed();
+                return;
+            }
+            sHandler.postDelayed(sEnsureFullScreen, PULL_INTERVAL_MS);
+        }
+    };
 
     /**
      * 把微信的全屏来电界面调到最前面。
@@ -510,8 +571,60 @@ public class CallSessionManager {
     public static synchronized void onWeChatCallNotificationGone(Context ctx) {
         Session s = sSession;
         if (s == null || s.ended) return;
-        markEnded("微信来电通知已消失（挂断/已接听/已取消）", ctx);
+        // 【v1.14 核心修复】这里以前"通知一消失就判定来电结束"，是**自动接听从不生效的根因**。
+        //
+        // 实测微信在响铃期间会**反复替换**这条来电通知：点它进全屏界面、
+        // 界面切换、系统把全屏 intent 拉起，都会触发 onNotificationRemoved(旧通知)
+        // 紧接着 onNotificationPosted(新通知)。旧逻辑看到"移除"就立刻 markEnded，
+        // 把整个会话标记为已结束 —— 于是：
+        //   · 8 秒后该触发的 sAutoRun 因为 s.ended 直接 return，永远不会自动接听；
+        //   · 正在进行的点击重试也被 cleanup() 全部撤销。
+        // 用户看到的现象正是：有圈/有提示，但就是不自动接。
+        //
+        // 现在改为**延迟判定**：通知消失后不马上下结论，等一小会儿再看
+        //   · 微信界面还在响铃 → 说明只是换了条通知，会话继续（自动接听照常进行）；
+        //   · 微信界面也没了/已接通 → 才是真的结束。
+        // 这样既保住"挂断能停下来"（v1.10 的修复），又不会误杀正在响铃的来电。
+        CallDiag.log("会话", "微信来电通知消失 → 延时确认是挂断还是仅通知被替换");
+        s.notifyGoneTicks = 0;
+        sHandler.removeCallbacks(sNotifyGoneConfirm);
+        sHandler.postDelayed(sNotifyGoneConfirm, NOTIFY_GONE_CONFIRM_MS);
     }
+
+    /** 通知消失后等待多久再下结论（够微信把新通知补上、或把全屏界面拉起来） */
+    private static final long NOTIFY_GONE_CONFIRM_MS = 2500L;
+
+    /**
+     * 通知消失的二次确认：只有"界面也不在响铃/没接通"时才真的结束。
+     * 这是为了区分两种完全不同的"通知消失"：
+     *   ① 对方挂断 / 已取消 / 已接听 → 真结束，必须停下来（v1.10 修复的初衷）
+     *   ② 微信只是在刷新同一条通知（进全屏界面、系统拉起全屏 intent）→ 不能结束
+     *      （否则自动接听永远不会触发，这正是用户反馈的核心问题）
+     */
+    private static final Runnable sNotifyGoneConfirm = new Runnable() {
+        @Override
+        public void run() {
+            Session s = sSession;
+            if (s == null || s.ended) return;
+            CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+            boolean ringing = svc != null && svc.isRinging();
+            boolean inCall = svc != null && svc.isInCall();
+            if (inCall) {
+                markAnswered("通知消失后确认已接通", sApp);
+                return;
+            }
+            if (ringing) {
+                // 还在响铃 → 只是通知被替换/被点开了，会话必须继续
+                s.notifyGoneTicks = 0;
+                s.goneTicks = 0;
+                CallDiag.log("会话", "通知消失但微信界面仍在响铃 → 判定为通知被替换，会话继续"
+                        + (s.autoAnswer ? "（自动接听流程不受影响）" : ""));
+                return;
+            }
+            // 界面也不再响铃：确实结束了
+            markEnded("微信来电通知与界面均已消失（挂断/已取消）", sApp);
+        }
+    };
 
     /**
      * 用户主动停止提醒（通知上的按钮 / 屏幕浮层上的按钮）。
@@ -607,13 +720,24 @@ public class CallSessionManager {
             // 界面形态可能中途变化（例如一开始只有横幅通知，几秒后才弹出全屏来电界面）。
             // 一旦变成全屏，就把屏幕指引从"只提示"升级成"圈出接听键"——
             // 这才是老人真正需要看到的东西。
-            if (svc != null && !s.handled && svc.isFullScreenCallUi()) {
+            //
+            // 【v1.14 重要修复】这里以前带 `!s.handled` 条件，导致**自动接听进行中反而不画圈**。
+            // 后果正是用户反馈的"没有提示圈"：
+            //   开了自动接听 → handled=true → 接下来最长 8 轮 × 11 秒都不画圈；
+            //   万一自动点击失败，屏幕上既没接上、也没有圈可点，老人完全无从下手。
+            // 而且自动接听期间 performAccept 会主动 hide() 一次浮层，
+            // 于是那段时间屏幕上只剩顶部"停止提醒"条，一根指引都没有。
+            // 现在改为：只要确认是全屏来电界面就画圈——**自动点击期间也画**，
+            // 这样即使自动化失灵，老人顺手就能点到那个绿圈，不会错过电话。
+            if (svc != null && svc.isFullScreenCallUi()) {
                 if (!s.fullScreenSeen) {
                     s.fullScreenSeen = true;
-                    CallDiag.log("提醒", "界面已变为全屏来电界面 → 把屏幕指引升级为「圈出接听键」");
+                    CallDiag.log("提醒", "界面已变为全屏来电界面 → 把屏幕指引升级为「圈出接听键」"
+                            + (s.handled ? "（自动接听进行中，仍然画圈以便手动兜底）" : ""));
                     if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer,
                             s.autoAnswer ? s.autoAnswerAt : 0L);
                 } else if (!GuideOverlay.showingRing()) {
+                    CallDiag.log("提醒", "全屏来电界面仍在，但指引圈不见了 → 重新画上");
                     if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer,
                             s.autoAnswer ? s.autoAnswerAt : 0L);
                 }
@@ -985,6 +1109,9 @@ public class CallSessionManager {
         sHandler.removeCallbacks(sTimeout);
         sHandler.removeCallbacks(sEnsureFullScreen);
         sHandler.removeCallbacks(sRetryAccept);
+        sHandler.removeCallbacks(sClickWatchdog);
+        sHandler.removeCallbacks(sNotifyGoneConfirm);
+        sClickCallbackFired = false;
         sPullAttempt = 0;
         WeChatClicker.cancel();
         stopSoundsAndVibration();

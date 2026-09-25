@@ -132,7 +132,104 @@ public class WhiteListManager {
             String n = e.name.trim();
             if (n.length() >= 2 && c.contains(n)) return e;
         }
+        // 【v1.14】上面四轮都是"原样比较"。真机上很多次匹配不上，
+        // 根本原因是两边看着一样、字符却不同，例如：
+        //   · 微信标题「hh 」带一个看不见的尾空格 / 换行
+        //   · 用户填的是全角「ｈｈ」而微信是半角「hh」
+        //   · 通知标题是「hh 邀请你视频通话」（名字和话术挤在同一串里）
+        //   · 大小写不同（「Hh」vs「hh」）
+        // 这些在原样比较里全部落空，表现就是"既不自动接听、播报还念微信昵称"。
+        // 所以再补一轮**规范化后**的比较：统一小写、去掉所有空白与常见标点，
+        // 再判断相等或互相包含。这一轮只在前四轮都失败时才走，不影响原有优先级。
+        Entry loose = matchLoose(c, list);
+        if (loose != null) {
+            CallDiag.log("来电", "名单匹配：原样比较未命中，规范化后命中「"
+                    + loose.name + "」（微信显示「" + c + "」，配置「"
+                    + loose.number + "」）");
+        }
+        return loose;
+    }
+
+    /**
+     * 规范化匹配（最后一道匹配手段）。
+     *
+     * 把两边的"干扰字符"全部剥掉后再比：小写化 + 去掉空白、全角转半角、
+     * 去掉常见中英文标点。剥完再判断相等 / 互相包含。
+     *
+     * 注意仍然要求被包含的一方长度 ≥ 2，避免单字（如「妈」）误命中一大串文字。
+     */
+    private static Entry matchLoose(String caller, List<Entry> list) {
+        String c = normalize(caller);
+        if (c.isEmpty()) return null;
+
+        // 先比备注名/号码，再比称呼——与原样比较保持同样的优先级
+        for (Entry e : list) {
+            String n = normalize(e.number);
+            if (n.length() >= 2 && c.equals(n)) return e;
+        }
+        for (Entry e : list) {
+            String n = normalize(e.number);
+            if (n.length() >= 2 && (c.contains(n) || n.contains(c))) return e;
+        }
+        for (Entry e : list) {
+            String n = normalize(e.name);
+            if (n.length() >= 2 && c.equals(n)) return e;
+        }
+        for (Entry e : list) {
+            String n = normalize(e.name);
+            if (n.length() >= 2 && (c.contains(n) || n.contains(c))) return e;
+        }
         return null;
+    }
+
+    /**
+     * 归一化：全角转半角 + 去空白 + 去标点 + 转小写。
+     *
+     * 做成 public 是为了让设置页能把"微信显示的名字"和"你配置的名字"
+     * 都以归一化后的样子展示出来——用户一眼就能看出到底差在哪个字符上，
+     * 而不是面对两个"看起来一模一样"的字符串无从下手。
+     */
+    public static String normalize(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            // 全角 ASCII（！-～）转半角
+            if (ch >= '\uFF01' && ch <= '\uFF5E') ch = (char) (ch - 0xFEE0);
+            // 全角空格
+            if (ch == '\u3000') continue;
+            if (Character.isWhitespace(ch)) continue;
+            // 常见中英文标点一律丢掉，它们不该参与"是不是同一个人"的判断
+            if ("：:，,。.、！!？?·-—_~～'\"“”‘’()（）[]【】{}<>《》".indexOf(ch) >= 0) continue;
+            sb.append(Character.toLowerCase(ch));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 给"为什么没匹配上"做一份可读的对照说明，写进运行记录 / 设置页提示。
+     * 返回形如：微信显示「hh」→ 归一化「hh」；你配置的「丈母娘/AB」→ 归一化「丈母娘/ab」
+     */
+    public static String explainNoMatch(Context ctx, String caller) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("微信显示「").append(caller == null ? "" : caller.trim())
+                .append("」→ 归一化「").append(normalize(caller)).append("」");
+        List<Entry> list = load(ctx);
+        if (list.isEmpty()) {
+            sb.append("；家人名单为空（还没添加任何家人）");
+            return sb.toString();
+        }
+        sb.append("；名单里能比的是：");
+        int i = 0;
+        for (Entry e : list) {
+            if (i++ > 0) sb.append(" / ");
+            sb.append("「").append(e.name).append("」");
+            if (e.number != null && !e.number.trim().isEmpty()) {
+                sb.append("(备注=").append(e.number.trim())
+                        .append("→").append(normalize(e.number)).append(")");
+            }
+        }
+        return sb.toString();
     }
 
     // ---------------- 未匹配来电人的记录 ----------------
