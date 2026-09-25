@@ -1,0 +1,310 @@
+package com.jia.callhelper;
+
+import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PixelFormat;
+import android.graphics.RectF;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
+import android.provider.Settings;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+
+/**
+ * 来电「屏幕指引」浮层。
+ *
+ * 为什么需要它：微信来电界面上，接听键是一个**没有文字的绿色圆钮**。老人看到满屏
+ * 画面，往往不知道该点哪里；光靠语音念「点右下角绿色按钮」，看不见还是白搭。
+ * 所以这里在屏幕最上层画一个醒目的绿色圆环，正好套在微信接听键的位置上，
+ * 再加一个「点这里接听」的箭头标签。
+ *
+ * 关键设计（保证不挡老人操作）：
+ * - 指示层整层 {@code FLAG_NOT_TOUCHABLE}：触摸直接穿透到下面的微信界面。
+ *   圆圈只是"画上去"的，老人在圈上点一下，和点微信那个按钮是同一个坐标，
+ *   一样有效——不会像以前的假界面那样"点了没反应"。
+ * - 只有一个小巧的「停止提醒」按钮可点，位置在屏幕顶部中央，与微信底部的
+ *   接听/挂断键完全不重叠。
+ * - 整层 {@code FLAG_NOT_FOCUSABLE}：不抢输入焦点，不会让无障碍读不到微信界面。
+ * - 圆圈位置来自真机截图实测：接听键中心在屏幕宽度 80.3%、距底部 11.4% 屏高处
+ *   （见 {@link CallHelperAccessibilityService#answerPoint}），任何尺寸的手机都适用。
+ *
+ * 自动接听期间会先隐藏浮层（避免干扰点击），一旦自动点击失败会重新显示，
+ * 这时才是真正需要老人自己动手的时候。
+ */
+public final class GuideOverlay {
+
+    /** 设置里的开关：来电时是否在屏幕上圈出接听按钮 */
+    public static final String PREF_KEY = "guide_overlay";
+
+    private static WindowManager sWm;
+    private static View sLayer;   // 指示层（不接收触摸）
+    private static View sStopBar; // 停止按钮（唯一可点击的地方）
+    private static boolean sShowing;
+    /** 当前这次显示的身份标记：用于「只隐藏自己那一次」，避免试听的定时隐藏误伤真实来电 */
+    private static Object sToken;
+
+    private GuideOverlay() {}
+
+    // ---------------- 对外接口 ----------------
+
+    public static boolean isEnabled(Context ctx) {
+        return WhiteListManager.prefs(ctx).getBoolean(PREF_KEY, true);
+    }
+
+    public static void setEnabled(Context ctx, boolean on) {
+        WhiteListManager.prefs(ctx).edit().putBoolean(PREF_KEY, on).apply();
+    }
+
+    /** 是否有「显示在其他应用上层」权限 */
+    public static boolean canOverlay(Context ctx) {
+        return Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(ctx);
+    }
+
+    /** 来电时显示指引。没有权限 / 用户关掉了开关时静默跳过 */
+    public static synchronized void show(Context ctx, String caller, boolean autoAnswer) {
+        if (ctx == null) return;
+        Context app = ctx.getApplicationContext();
+        if (!isEnabled(app)) return;
+        if (!canOverlay(app)) {
+            CallDiag.log("指引", "没有「显示在其他应用上层」权限，本次不显示屏幕指引");
+            return;
+        }
+        hide();
+        try {
+            sWm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+            if (sWm == null) return;
+            int type = Build.VERSION.SDK_INT >= 26
+                    ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                    : WindowManager.LayoutParams.TYPE_PHONE;
+
+            int[] p = CallHelperAccessibilityService.answerPoint(app);
+
+            // ① 指示层：整层不接收触摸，事件穿透到微信
+            View layer = new GuideLayerView(app, p[0], p[1], p[2], caller, autoAnswer);
+            WindowManager.LayoutParams lp1 = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    type,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    PixelFormat.TRANSLUCENT);
+            lp1.gravity = Gravity.TOP | Gravity.LEFT;
+            sWm.addView(layer, lp1);
+            sLayer = layer;
+
+            // ② 停止按钮：能让老人/家人随时把声音关掉，不再有"关不掉"的情况
+            sStopBar = buildStopBar(app);
+            WindowManager.LayoutParams lp2 = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    type,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT);
+            lp2.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+            lp2.y = dp(app, 60);
+            sWm.addView(sStopBar, lp2);
+
+            sShowing = true;
+            sToken = new Object();
+            CallDiag.log("指引", "已在屏幕上圈出接听键：中心=(" + p[0] + "," + p[1] + ") 半径=" + p[2]
+                    + " 自动接听=" + autoAnswer);
+        } catch (Throwable t) {
+            CallDiag.log("指引", "显示屏幕指引失败：" + t);
+            sShowing = false;
+            sLayer = null;
+            sStopBar = null;
+            sToken = null;
+        }
+    }
+
+    /** 取本次显示的身份标记，配合 {@link #hideIf(Object)} 使用 */
+    public static synchronized Object token() {
+        return sToken;
+    }
+
+    /**
+     * 只隐藏「自己那一次」显示的浮层。
+     * 试听会定时收起指引，若不判断身份，这个定时任务有可能在真实来电时把
+     * 刚显示出来的指引一起收掉。
+     */
+    public static synchronized void hideIf(Object t) {
+        if (t == null || t != sToken) return;
+        hide();
+    }
+
+    /** 来电结束 / 已接通 / 用户关掉提醒时移除浮层 */
+    public static synchronized void hide() {
+        if (sLayer == null && sStopBar == null && !sShowing) return;
+        try {
+            if (sLayer != null && sWm != null) sWm.removeViewImmediate(sLayer);
+        } catch (Throwable ignore) {}
+        try {
+            if (sStopBar != null && sWm != null) sWm.removeViewImmediate(sStopBar);
+        } catch (Throwable ignore) {}
+        sLayer = null;
+        sStopBar = null;
+        sShowing = false;
+        sToken = null;
+    }
+
+    public static boolean isShowing() {
+        return sShowing;
+    }
+
+    // ---------------- 停止按钮 ----------------
+
+    private static View buildStopBar(Context ctx) {
+        LinearLayout box = new LinearLayout(ctx);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        TextView btn = new TextView(ctx);
+        btn.setText("✕ 停止提醒");
+        btn.setTextSize(17);
+        btn.setTextColor(Color.WHITE);
+        btn.setTypeface(Typeface.DEFAULT_BOLD);
+        btn.setGravity(Gravity.CENTER);
+        btn.setPadding(dp(ctx, 22), dp(ctx, 11), dp(ctx, 22), dp(ctx, 11));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xE6333333);
+        bg.setCornerRadius(dp(ctx, 24));
+        btn.setBackground(bg);
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                CallSessionManager.stopByUser(v.getContext());
+            }
+        });
+        box.addView(btn);
+
+        TextView tip = new TextView(ctx);
+        tip.setText("声音太吵就点这里");
+        tip.setTextSize(12);
+        tip.setTextColor(0xCCFFFFFF);
+        tip.setGravity(Gravity.CENTER);
+        tip.setPadding(0, dp(ctx, 4), 0, 0);
+        box.addView(tip);
+        return box;
+    }
+
+    // ---------------- 指示层绘制 ----------------
+
+    private static class GuideLayerView extends View {
+
+        private final Paint mRing = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mPulse = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mLabel = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mLabelText = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mArrow = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mTipBg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mTipText = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        private final float mCx, mCy, mR;
+        private final String mCaller;
+        private final boolean mAuto;
+        private final float mDensity;
+
+        GuideLayerView(Context c, int cx, int cy, int r, String caller, boolean auto) {
+            super(c);
+            mCx = cx;
+            mCy = cy;
+            mR = r;
+            mCaller = caller == null ? "家人" : caller;
+            mAuto = auto;
+            mDensity = getResources().getDisplayMetrics().density;
+
+            mRing.setStyle(Paint.Style.STROKE);
+            mRing.setColor(0xFF22C55E);
+            mRing.setStrokeWidth(9 * mDensity);
+            mRing.setStrokeCap(Paint.Cap.ROUND);
+
+            mPulse.setStyle(Paint.Style.STROKE);
+            mPulse.setColor(0xFF22C55E);
+            mPulse.setStrokeWidth(6 * mDensity);
+
+            mLabel.setColor(0xFF16A34A);
+            mLabelText.setColor(Color.WHITE);
+            mLabelText.setTypeface(Typeface.DEFAULT_BOLD);
+            mLabelText.setTextSize(28);
+            mLabelText.setTextAlign(Paint.Align.CENTER);
+
+            mArrow.setColor(0xFF16A34A);
+            mArrow.setStyle(Paint.Style.FILL);
+
+            mTipBg.setColor(0xCC000000);
+            mTipText.setColor(Color.WHITE);
+            mTipText.setTextSize(17);
+            mTipText.setTextAlign(Paint.Align.CENTER);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            // 极淡压暗，让绿色圆圈更醒目（不影响看微信界面）
+            canvas.drawColor(0x12000000);
+
+            float ringR = mR * 1.15f;
+
+            // 脉冲圈：向外扩散，抓注意力
+            long t = System.currentTimeMillis() % 1500L;
+            float k = t / 1500f;
+            int alpha = (int) (230 * (1f - k));
+            if (alpha > 0) {
+                mPulse.setAlpha(alpha);
+                canvas.drawCircle(mCx, mCy, ringR + mR * 0.55f * k, mPulse);
+            }
+            // 主圆环
+            canvas.drawCircle(mCx, mCy, ringR, mRing);
+
+            // 「点这里接听」标签 + 指向圆环的箭头
+            float arrowTipY = mCy - ringR - 8 * mDensity;
+            float arrowBaseY = arrowTipY - 38 * mDensity;
+            Path arrow = new Path();
+            arrow.moveTo(mCx, arrowTipY);
+            arrow.lineTo(mCx - 20 * mDensity, arrowBaseY);
+            arrow.lineTo(mCx + 20 * mDensity, arrowBaseY);
+            arrow.close();
+            canvas.drawPath(arrow, mArrow);
+
+            String label = "点这里接听";
+            float labelW = mLabelText.measureText(label) + 44 * mDensity;
+            float labelH = 52 * mDensity;
+            float labelBottom = arrowBaseY - 6 * mDensity;
+            RectF box = new RectF(mCx - labelW / 2, labelBottom - labelH, mCx + labelW / 2, labelBottom);
+            float radius = labelH / 2;
+            canvas.drawRoundRect(box, radius, radius, mLabel);
+            Paint.FontMetrics fm = mLabelText.getFontMetrics();
+            float baseline = box.centerY() - (fm.ascent + fm.descent) / 2;
+            canvas.drawText(label, mCx, baseline, mLabelText);
+
+            // 顶部提示：谁打来的 + 怎么操作
+            String tip = mAuto
+                    ? (mCaller + " 来电话了 · 正在自动接听…")
+                    : (mCaller + " 来电话了 · 想接就点绿色圆圈；不想接点左边的红色按钮");
+            float tipW = mTipText.measureText(tip) + 40 * mDensity;
+            float tipH = 44 * mDensity;
+            float tipTop = 122 * mDensity;
+            RectF tipBox = new RectF(mCx - tipW / 2, tipTop, mCx + tipW / 2, tipTop + tipH);
+            canvas.drawRoundRect(tipBox, 12 * mDensity, 12 * mDensity, mTipBg);
+            Paint.FontMetrics tfm = mTipText.getFontMetrics();
+            canvas.drawText(tip, mCx, tipBox.centerY() - (tfm.ascent + tfm.descent) / 2, mTipText);
+
+            // 脉冲动画：每 40ms 重绘一帧（视图移除后自动停止）
+            if (isAttachedToWindow()) postInvalidateDelayed(40L);
+        }
+    }
+
+    private static int dp(Context ctx, int v) {
+        return Math.round(v * ctx.getResources().getDisplayMetrics().density);
+    }
+}

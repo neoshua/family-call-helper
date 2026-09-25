@@ -55,12 +55,27 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     private static final String[] IN_CALL_KEYS = {"静音", "免提", "扬声器", "切换摄像头", "摄像头已关"};
 
     /**
-     * 盲点兜底：微信来电的接听键在屏幕右下角，大致在屏幕宽度 75%、高度 80% 的位置。
-     * 水平方向还能进一步校准——视频来电界面上方的「摄像头已开 / 模糊背景」
+     * 接听键的位置，用「占屏幕的百分比」表示 —— 这样任何品牌、任何尺寸、
+     * 任何分辨率的手机都通用，不需要为每种机型单独适配。
+     *
+     * 数据来源：实测微信视频来电界面截图（1220 × 2712），
+     * 用像素分析找出底部两个圆钮的中心：
+     *   红色挂断键中心 (240, 2403)，直径 216px
+     *   绿色接听键中心 (980, 2403)（界面左右对称推出）
+     * 于是：
+     *   接听键中心横坐标 = 980 / 1220 = 80.3% 屏宽
+     *   接听键中心距底部 = (2712 - 2403) / 2712 = 11.4% 屏高
+     *   按钮半径         = 108 / 1220 = 8.85% 屏宽
+     * （挂断键就在同一行的左侧 19.7% 处。）
+     *
+     * 水平方向还能进一步校准——视频来电界面上方的「摄像头已开 / 模糊背景 / 翻转」
      * 与底部的绿色接听键在同一竖列，用它们的横坐标替换经验值会准得多（见 tapAnswerByRatio）。
      */
-    private static final float ANSWER_X_RATIO = 0.75f;
-    private static final float ANSWER_Y_RATIO = 0.80f;
+    private static final float ANSWER_X_RATIO = 0.803f;
+    /** 接听键中心距屏幕底部的比例（原点取左下角，见 answerPoint） */
+    private static final float ANSWER_BOTTOM_RATIO = 0.114f;
+    /** 接听键半径占屏幕宽度的比例（屏幕指引画圈时用） */
+    public static final float ANSWER_RADIUS_RATIO = 0.0885f;
     /** 用于校准接听键横坐标的上方按钮文案 */
     private static final String[] X_ANCHOR_KEYS = {"摄像头已开", "摄像头已关", "模糊背景", "翻转"};
 
@@ -119,15 +134,40 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
     // ---------------- 界面状态判断 ----------------
 
+    /**
+     * 取微信窗口的根节点。
+     *
+     * 为什么不直接用 getRootInActiveWindow()：来电时我们会在屏幕最上层显示
+     * 「屏幕指引」浮层（GuideOverlay），它是另一个窗口。若只取"最上面的活动窗口"，
+     * 有可能拿到我们自己的浮层，于是误判成「当前不在微信」→ 不点击、也判断不出
+     * 是否已接通。所以这里改为在所有窗口里找属于微信的那一个，做到"浮层在场也不受影响"。
+     */
+    private AccessibilityNodeInfo wechatWindowRoot() {
+        try {
+            AccessibilityNodeInfo active = getRootInActiveWindow();
+            if (active != null && isWeChatWindow(active)) return active;
+        } catch (Exception ignore) {}
+        try {
+            List<AccessibilityWindowInfo> wins = getWindows();
+            if (wins != null) {
+                for (AccessibilityWindowInfo win : wins) {
+                    if (win == null) continue;
+                    AccessibilityNodeInfo r = win.getRoot();
+                    if (r != null && isWeChatWindow(r)) return r;
+                }
+            }
+        } catch (Exception ignore) {}
+        return null;
+    }
+
     /** 扫描当前微信界面，判断处于来电/通话中/已结束哪种状态 */
     private void scanNow(boolean windowChanged) {
         mLastScanAt = SystemClock.elapsedRealtime();
-        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo root = wechatWindowRoot();
         if (root == null) {
-            if (windowChanged) CallDiag.log("无障碍", "收到微信窗口变化，但拿不到界面内容（root=null）");
+            if (windowChanged) CallDiag.log("无障碍", "收到微信窗口变化，但拿不到微信界面内容");
             return;
         }
-        if (!isWeChatWindow(root)) return;
 
         if (isRinging(root)) {
             boolean video = findNode(root, "视频", false) != null
@@ -150,8 +190,8 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
     /** 是否处于「正在响铃的来电」界面 */
     public boolean isRinging() {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        return root != null && isWeChatWindow(root) && isRinging(root);
+        AccessibilityNodeInfo root = wechatWindowRoot();
+        return root != null && isRinging(root);
     }
 
     private boolean isRinging(AccessibilityNodeInfo root) {
@@ -175,8 +215,8 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
     /** 是否已经接通（通话中界面） */
     public boolean isInCall() {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || !isWeChatWindow(root)) return false;
+        AccessibilityNodeInfo root = wechatWindowRoot();
+        if (root == null) return false;
         return isInCall(root);
     }
 
@@ -212,20 +252,15 @@ public class CallHelperAccessibilityService extends AccessibilityService {
      *                   在已经接通的情况下有碰到挂断键的风险。
      */
     public int answerCall(boolean allowBlind) {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo root = wechatWindowRoot();
         if (root == null) {
             if (!allowBlind) {
                 CallDiag.log("接听", "拿不到微信界面，且本次已用过坐标兜底，不再重复盲点");
                 return RESULT_NO_WINDOW;
             }
             boolean ok = tapAnswerByRatio();
-            CallDiag.log("接听", "拿不到微信界面（root=null），改用坐标盲点 -> " + ok);
+            CallDiag.log("接听", "拿不到微信界面，按屏幕比例盲点接听键 -> " + ok);
             return ok ? RESULT_CLICKED_BLIND : RESULT_NO_WINDOW;
-        }
-        if (!isWeChatWindow(root)) {
-            CharSequence p = root.getPackageName();
-            CallDiag.log("接听", "当前前台不是微信（" + (p == null ? "未知" : p) + "），不点击");
-            return RESULT_NOT_WECHAT;
         }
 
         // 1) 语义
@@ -235,10 +270,18 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             return RESULT_CLICKED_PRECISE;
         }
 
-        // 2) 几何
+        // 2) 几何：屏幕右下方那个可点击的圆形按钮
         AccessibilityNodeInfo geo = findAnswerByGeometry(root);
         if (geo != null && clickNode(geo)) {
             CallDiag.log("接听", "按右下角圆形按钮定位接听键并已点击（" + bounds(geo) + "）");
+            return RESULT_CLICKED_PRECISE;
+        }
+
+        // 2b) 镜像：只找到左下角的挂断键时，接听键就在同一行的对称位置
+        float[] mirror = mirrorOfDecline(root);
+        if (mirror != null && tapScreen(mirror[0], mirror[1])) {
+            CallDiag.log("接听", "只找到左下角的挂断键，按左右对称推算接听键并点击 ("
+                    + (int) mirror[0] + "," + (int) mirror[1] + ")");
             return RESULT_CLICKED_PRECISE;
         }
 
@@ -250,6 +293,49 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         boolean ok = tapAnswerByRatio();
         CallDiag.log("接听", "文字与按钮都定位不到，改用坐标盲点 -> " + ok);
         return ok ? RESULT_CLICKED_BLIND : RESULT_NO_WINDOW;
+    }
+
+    /**
+     * 退一步找左下角的「挂断」键：微信来电界面上接听/挂断是同一行左右对称的两个圆钮，
+     * 知道其中任意一个的位置，就能推算出另一个（x 关于屏幕中线做镜像）。
+     */
+    private float[] mirrorOfDecline(AccessibilityNodeInfo root) {
+        int[] size = screenSize();
+        int w = size[0], h = size[1];
+        if (w <= 0 || h <= 0) return null;
+        int minSide = Math.round(40 * getResources().getDisplayMetrics().density);
+
+        AccessibilityNodeInfo best = null;
+        int bestY = Integer.MIN_VALUE;
+        Deque<AccessibilityNodeInfo> stack = new ArrayDeque<AccessibilityNodeInfo>();
+        stack.push(root);
+        int visited = 0;
+        while (!stack.isEmpty() && visited < 400) {
+            AccessibilityNodeInfo n = stack.pop();
+            visited++;
+            Rect r = new Rect();
+            n.getBoundsInScreen(r);
+            if (isClickableish(n) && r.width() >= minSide && r.height() >= minSide) {
+                float cx = r.exactCenterX(), cy = r.exactCenterY();
+                boolean leftHalf = cx < w * 0.45f;
+                boolean bottomArea = cy > h * 0.55f;
+                boolean roundish = r.height() != 0
+                        && (float) r.width() / r.height() > 0.6f
+                        && (float) r.width() / r.height() < 1.7f;
+                if (leftHalf && bottomArea && roundish && cy > bestY) {
+                    bestY = (int) cy;
+                    best = n;
+                }
+            }
+            for (int i = 0; i < n.getChildCount(); i++) {
+                AccessibilityNodeInfo c = n.getChild(i);
+                if (c != null) stack.push(c);
+            }
+        }
+        if (best == null) return null;
+        Rect r = new Rect();
+        best.getBoundsInScreen(r);
+        return new float[]{w - r.exactCenterX(), r.exactCenterY()};
     }
 
     private AccessibilityNodeInfo findAnswerNode(AccessibilityNodeInfo root) {
@@ -315,38 +401,102 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 兜底：按屏幕比例盲点接听键位置（右下角）。
+     * 兜底：按屏幕比例盲点接听键位置（右下角，80.3% 屏宽 / 距底部 11.4% 屏高）。
      * 若当前界面能读到「摄像头已开 / 模糊背景 / 翻转」这类按钮，就用它们的横坐标
-     * 校准——这些按钮与接听键是同一竖列，比固定 75% 准得多。
+     * 校准——这些按钮与接听键是同一竖列，比固定比例更准。
      */
     private boolean tapAnswerByRatio() {
+        AccessibilityNodeInfo root = wechatWindowRoot();
         int[] size = screenSize();
         if (size[0] <= 0 || size[1] <= 0) return false;
-        float x = size[0] * ANSWER_X_RATIO;
-        float y = size[1] * ANSWER_Y_RATIO;
+        int[] p = answerPointInternal(root, size);
+        return tapScreen(p[0], p[1]);
+    }
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root != null && isWeChatWindow(root)) {
+    /**
+     * 计算接听键中心点（屏幕坐标），返回 {x, y, 半径}。
+     *
+     * 坐标系约定（按用户的思路）：以**屏幕左下角为原点**，
+     * 接听键中心在水平方向占屏宽 80.3%，在垂直方向距底部占屏高 11.4%。
+     * 换成左上角为原点的 Android 屏幕坐标就是 y = 屏高 × (1 - 0.114)。
+     *
+     * 若手里有微信界面节点（视频来电上方的「摄像头已开」等按钮与接听键同列），
+     * 会用它们的横坐标覆盖那个 80.3%，进一步提高准确度。
+     *
+     * 供屏幕指引浮层（GuideOverlay）与自动点击共用，保证"圈出来的位置"
+     * 与"实际点的位置"永远是同一个点。
+     */
+    public static int[] answerPoint(Context ctx) {
+        CallHelperAccessibilityService svc = sInstance;
+        AccessibilityNodeInfo root = svc != null ? svc.wechatWindowRoot() : null;
+        int[] size = svc != null ? svc.screenSize() : screenSizeFrom(ctx);
+        int[] p = answerPointInternal(root, size);
+        return p;
+    }
+
+    private static int[] answerPointInternal(AccessibilityNodeInfo root, int[] size) {
+        int w = size[0], h = size[1];
+        float x = w * ANSWER_X_RATIO;
+        // 距底部 11.4% 屏高 → 换算成从顶部算的 y
+        float y = h - h * ANSWER_BOTTOM_RATIO;
+        int r = Math.round(w * ANSWER_RADIUS_RATIO);
+
+        if (root != null) {
             for (String k : X_ANCHOR_KEYS) {
-                AccessibilityNodeInfo n = findNode(root, k, false);
+                AccessibilityNodeInfo n = findNodeStatic(root, k);
                 if (n == null) continue;
-                Rect r = new Rect();
-                n.getBoundsInScreen(r);
-                if (r.width() > 0 && r.exactCenterX() > size[0] * 0.5f) {
-                    x = r.exactCenterX();
-                    CallDiag.log("接听", "用「" + k + "」校准接听键横坐标 -> x=" + (int) x
-                            + "（原按屏幕宽度估算为 " + (int) (size[0] * ANSWER_X_RATIO) + "）");
+                Rect rect = new Rect();
+                n.getBoundsInScreen(rect);
+                if (rect.width() > 0 && rect.exactCenterX() > w * 0.5f) {
+                    x = rect.exactCenterX();
+                    CallDiag.log("接听", "用「" + k + "」校准接听键横坐标 → x=" + (int) x
+                            + "（按屏幕宽度估算为 " + (int) (w * ANSWER_X_RATIO) + "）");
                     break;
                 }
             }
         }
-        return tapScreen(x, y);
+        return new int[]{Math.round(x), Math.round(y), r};
+    }
+
+    private static int[] screenSizeFrom(Context ctx) {
+        if (ctx == null) return new int[]{0, 0};
+        try {
+            DisplayMetrics dm = new DisplayMetrics();
+            WindowManager wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
+            if (wm == null) return new int[]{0, 0};
+            wm.getDefaultDisplay().getRealMetrics(dm);
+            return new int[]{dm.widthPixels, dm.heightPixels};
+        } catch (Exception e) {
+            return new int[]{0, 0};
+        }
+    }
+
+    private static AccessibilityNodeInfo findNodeStatic(AccessibilityNodeInfo root, String key) {
+        if (root == null) return null;
+        Deque<AccessibilityNodeInfo> stack = new ArrayDeque<AccessibilityNodeInfo>();
+        stack.push(root);
+        int visited = 0;
+        while (!stack.isEmpty() && visited < 600) {
+            AccessibilityNodeInfo n = stack.pop();
+            visited++;
+            CharSequence t = n.getText();
+            CharSequence d = n.getContentDescription();
+            if ((t != null && t.toString().contains(key))
+                    || (d != null && d.toString().contains(key))) {
+                return n;
+            }
+            for (int i = 0; i < n.getChildCount(); i++) {
+                AccessibilityNodeInfo c = n.getChild(i);
+                if (c != null) stack.push(c);
+            }
+        }
+        return null;
     }
 
     /** 当前微信界面里是否读得到任何文字/描述（用来判断「读不到」还是「真的没接通」） */
     public boolean canReadUiText() {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || !isWeChatWindow(root)) return false;
+        AccessibilityNodeInfo root = wechatWindowRoot();
+        if (root == null) return false;
         Deque<AccessibilityNodeInfo> stack = new ArrayDeque<AccessibilityNodeInfo>();
         stack.push(root);
         int visited = 0;
@@ -409,8 +559,8 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
     /** 兼容旧调用：按文字点击（内部已改为通用实现） */
     public boolean clickNodeWithText(String label) {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || !isWeChatWindow(root)) return false;
+        AccessibilityNodeInfo root = wechatWindowRoot();
+        if (root == null) return false;
         return clickNode(findNode(root, label, false));
     }
 
@@ -437,8 +587,14 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         return null;
     }
 
+    /**
+     * 微信是否在前台。
+     * 用"能找到微信窗口"来判断，而不是"最上面的窗口是不是微信"——
+     * 因为我们自己会在最上面画屏幕指引浮层（见 GuideOverlay），
+     * 用后者会把浮层误当成"微信不在前台"。
+     */
     public boolean isWeChatForeground() {
-        return WECHAT_PKG.equals(getForegroundPackage());
+        return wechatWindowRoot() != null;
     }
 
     private boolean tapScreen(float x, float y) {

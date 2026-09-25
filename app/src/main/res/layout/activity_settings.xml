@@ -130,6 +130,46 @@
             android:layout_marginBottom="6dp"
             android:background="#EEEEEE"/>
 
+        <!-- 来电提醒方式：屏幕指引 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="来电提醒方式"
+            android:textColor="@color/textMain"
+            android:textSize="22sp"
+            android:textStyle="bold"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="10dp">
+
+            <Switch
+                android:id="@+id/sw_guide_overlay"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"/>
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginLeft="12dp"
+                android:text="来电时在屏幕上圈出绿色接听按钮（告诉老人点哪里）"
+                android:textColor="@color/textMain"
+                android:textSize="18sp"/>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="圈出来的位置正好套在微信那个绿色接听键上，点下去等同于点微信的按钮。圆圈不会挡住操作，另外屏幕顶部还有一个「停止提醒」按钮，随时能关掉声音。需要「显示在其他应用上层」权限。"
+            android:textColor="@color/textSub"
+            android:textSize="15sp"/>
+
         <!-- 试听 -->
         <TextView
             android:layout_width="wrap_content"
@@ -147,7 +187,7 @@
             android:layout_marginTop="10dp"
             android:background="@drawable/bg_btn_primary"
             android:stateListAnimator="@null"
-            android:text="▶ 试听语音播报（模拟张三来电）"
+            android:text="▶ 试听：语音播报 + 屏幕指引（模拟张三来电）"
             android:textColor="#FFFFFF"
             android:textSize="20sp"/>
 

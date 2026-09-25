@@ -22,6 +22,42 @@ public class WeChatCallListenerService extends NotificationListenerService {
     };
 
     /**
+     * 最近一条被认定为「微信来电」的通知 key。
+     *
+     * ⚠️ 这是「挂断后铃声还在响」的根因修复点。
+     * 实测微信在【对方挂断 / 自己接听 / 对方取消】时，处理方式是**把来电通知直接移除**，
+     * 而不是把通知文字改成「已取消」。旧版本只实现了 onNotificationPosted（内容变化），
+     * 没实现 onNotificationRemoved，于是挂断后 App 完全不知道，
+     * 语音和铃声会一直响到硬超时（旧版是 3 分钟）。
+     */
+    private static volatile String sCallNotifyKey;
+
+    @Override
+    public void onNotificationPosted(StatusBarNotification sbn) {
+        try {
+            handle(sbn);
+        } catch (Exception ignore) {}
+    }
+
+    /** 微信来电通知消失 = 来电结束（挂断/已接听/已取消/被划掉） */
+    @Override
+    public void onNotificationRemoved(StatusBarNotification sbn) {
+        try {
+            handleRemoved(sbn);
+        } catch (Exception ignore) {}
+    }
+
+    private void handleRemoved(StatusBarNotification sbn) {
+        if (sbn == null || !WECHAT.equals(sbn.getPackageName())) return;
+        String key = sbn.getKey();
+        if (key == null || !key.equals(sCallNotifyKey)) return;
+        sCallNotifyKey = null;
+        CallDiag.init(this);
+        CallDiag.log("通知", "微信来电通知已消失 → 停止语音与铃声");
+        CallSessionManager.onWeChatCallNotificationGone(this);
+    }
+
+    /**
      * 「一定是在响铃的来电邀请」的特征话术。命中就直接认定为来电，
      * 不再去看通知的 ongoing / 优先级 / 渠道名。
      *
@@ -36,13 +72,6 @@ public class WeChatCallListenerService extends NotificationListenerService {
             "邀请你进行视频通话", "邀请你进行语音通话",
             "邀请你视频", "邀请你语音", "邀请你接听"
     };
-
-    @Override
-    public void onNotificationPosted(StatusBarNotification sbn) {
-        try {
-            handle(sbn);
-        } catch (Exception ignore) {}
-    }
 
     private void handle(StatusBarNotification sbn) {
         if (sbn == null || !WECHAT.equals(sbn.getPackageName())) return;
@@ -69,6 +98,7 @@ public class WeChatCallListenerService extends NotificationListenerService {
             if (callRelated) {
                 CallDiag.log("通知", "结束类通知：" + shortOf(all) + " → 清理会话");
             }
+            sCallNotifyKey = null;
             CallSessionManager.onWeChatCallEnded(this, all);
             return;
         }
@@ -85,6 +115,8 @@ public class WeChatCallListenerService extends NotificationListenerService {
         String caller = resolveCaller(title, text, bigText, ticker);
         boolean video = all.contains("视频");
         PendingIntent pi = n.contentIntent;
+        // 记住这条通知：它一消失（挂断/接听/取消）就要立刻停掉语音与铃声
+        sCallNotifyKey = sbn.getKey();
         CallDiag.log("通知", "认定为来电邀请：" + shortOf(all)
                 + " → 来电人=" + caller + " 视频=" + video
                 + "（渠道=" + channel + " flags=" + n.flags + "）");

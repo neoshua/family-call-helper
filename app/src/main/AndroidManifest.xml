@@ -66,6 +66,14 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden"/>
 
+        <!--
+            「停止提醒」按钮的落点：来电时老人/家人随时能把语音和铃声关掉。
+            通知上有一个，屏幕浮层上也有一个，都走这里。
+            必须是显式广播（只接收本应用发出的），所以 exported=false。
+        -->
+        <receiver android:name=".StopAlertReceiver"
+            android:exported="false"/>
+
         <!-- 通知监听：读取微信来电通知（需用户在系统设置里授权） -->
         <service android:name=".WeChatCallListenerService"
             android:exported="true"

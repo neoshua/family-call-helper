@@ -39,6 +39,7 @@ public class SettingsActivity extends Activity {
     private SeekBar mVolume;
     private TextView mVolumePct;
     private Switch mAutoMaster;
+    private Switch mGuideOverlay;
     private EditText mDelay;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
 
@@ -56,6 +57,7 @@ public class SettingsActivity extends Activity {
         mVolume = (SeekBar) findViewById(R.id.seek_volume);
         mVolumePct = (TextView) findViewById(R.id.tv_volume_pct);
         mAutoMaster = (Switch) findViewById(R.id.sw_auto_master);
+        mGuideOverlay = (Switch) findViewById(R.id.sw_guide_overlay);
         mDelay = (EditText) findViewById(R.id.input_auto_delay);
         mDelay.setText(String.valueOf(WhiteListManager.prefs(this)
                 .getInt("auto_delay_sec", CallSessionManager.DEFAULT_AUTO_DELAY_SEC)));
@@ -161,6 +163,24 @@ public class SettingsActivity extends Activity {
             public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+
+        // 屏幕指引开关（默认开）：来电时在屏幕上圈出微信那个绿色接听键
+        mGuideOverlay.setChecked(GuideOverlay.isEnabled(this));
+        mGuideOverlay.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                GuideOverlay.setEnabled(SettingsActivity.this, isChecked);
+                if (isChecked && !GuideOverlay.canOverlay(SettingsActivity.this)) {
+                    Toast.makeText(SettingsActivity.this,
+                            "还需要「显示在其他应用上层」权限，请点上面的按钮开启",
+                            Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(SettingsActivity.this,
+                            isChecked ? "来电时会在屏幕上圈出绿色接听键" : "已关闭屏幕指引（只播报语音）",
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
         });
 
         // 自动接听总开关（默认关）
@@ -377,8 +397,8 @@ public class SettingsActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 23) {
             rowOverlay.setVisibility(View.VISIBLE);
             setStatus(mStatusOverlay, PermissionStatus.isOverlay(this),
-                    "✓ 已允许（来电时能把微信通话界面调到最前面，接听更容易成功）",
-                    "✗ 未允许：锁屏来电时微信界面可能调不到前台，自动接听容易失败");
+                    "✓ 已允许（来电时能在屏幕上圈出绿色接听键，也能把微信通话界面调到最前面）",
+                    "✗ 未允许：来电时无法在屏幕上圈出接听键，锁屏时自动接听也更容易失败");
         } else {
             rowOverlay.setVisibility(View.GONE);
         }
