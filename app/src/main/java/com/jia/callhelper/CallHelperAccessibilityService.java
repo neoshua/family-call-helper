@@ -106,6 +106,13 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     public static final float ANSWER_RADIUS_RATIO = 0.0885f;
     /** 用于校准接听键横坐标的上方按钮文案 */
     private static final String[] X_ANCHOR_KEYS = {"摄像头已开", "摄像头已关", "模糊背景", "翻转"};
+    /**
+     * 同列校准的最大容差（占屏宽比例）。
+     * 实测微信把「翻转 / 模糊背景 / 摄像头已开」三个功能键按"平均分布"排布，
+     * 而接听键是按屏幕左右对称分列在两端的——两者并非严格同列，实测差约 69px
+     * （5.7% 屏宽）。所以只有偏差在 2% 屏宽以内才敢用它微调，否则一律相信实测比例。
+     */
+    private static final float X_ANCHOR_TOLERANCE = 0.02f;
 
     private static volatile CallHelperAccessibilityService sInstance;
     private static final long SCAN_INTERVAL_MS = 1200;
@@ -172,6 +179,15 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     public static class WeChatWin {
         public AccessibilityNodeInfo root;
         public final Rect bounds = new Rect();
+    }
+
+    /** 供诊断日志读取当前微信窗口（拿不到返回 null）。只用于打日志，不改变任何行为 */
+    public WeChatWin debugWeChatWindow() {
+        try {
+            return findWeChatWindow();
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /**
@@ -423,12 +439,29 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             return RESULT_CLICKED_PRECISE; // 上层会用 isInCall 再次确认
         }
         if (!isFullScreenCallUi()) {
-            CharSequence pkg = root.getPackageName();
-            CallDiag.log("接听", "当前不是全屏来电界面（前台包名="
-                    + (pkg == null ? "未知" : pkg) + "）→ 不点击，先要求拉起全屏界面。"
-                    + "读到的文字=" + (canReadUiText(root) ? "有" : "无")
-                    + " 窗口=" + win.bounds.toShortString());
-            return RESULT_NOT_RINGING;
+            // 【v1.12 关键放行】"判定不是全屏来电界面"有两种截然不同的情况，必须分开：
+            //
+            //  A. 界面上**读得到内容**，且内容明确表明不是来电页
+            //     （例如只显示了聊天列表、或只有顶部横幅）→ 真的没有接听键，绝不能点。
+            //
+            //  B. 界面上**读不到任何内容**（canReadUiText=false），微信窗口却铺满整屏。
+            //     这正是微信全屏来电界面的典型样子（整页自绘，无障碍一个节点都没有）。
+            //     旧版本在这里一律当成 A 拒绝，于是永远返回"不是全屏来电界面"，
+            //     上层反复"拉起"也拉不出个所以然，最终整通电话都没自动接听
+            //     —— 用户实测反馈的正是这个现象。
+            //     这种情况必须放行：屏幕右下角就是接听键，按几何/比例去点。
+            boolean readable = canReadUiText(root);
+            boolean windowFull = isWindowFullScreen(win);
+            if (readable || !windowFull) {
+                CharSequence pkg = root.getPackageName();
+                CallDiag.log("接听", "当前不是全屏来电界面（前台包名="
+                        + (pkg == null ? "未知" : pkg) + "）→ 不点击，先要求拉起全屏界面。"
+                        + "读到的文字=" + (readable ? "有" : "无")
+                        + " 窗口=" + win.bounds.toShortString());
+                return RESULT_NOT_RINGING;
+            }
+            CallDiag.log("接听", "微信窗口铺满整屏且读不到任何节点（整页自绘，正是全屏来电界面的特征）"
+                    + " → 按几何/比例尝试点击接听键。窗口=" + win.bounds.toShortString());
         }
 
         // 1) 语义
@@ -657,17 +690,35 @@ public class CallHelperAccessibilityService extends AccessibilityService {
                 .append(" → 中心=(").append(Math.round(x)).append(",").append(Math.round(y))
                 .append(") 半径=").append(r);
 
+        // 【v1.12 修正】这里原先是"用「摄像头已开 / 模糊背景」等同列按钮的横坐标
+        // 直接覆盖估算值"。用户实机截图比对后发现：那个按钮中心在 x≈909，
+        // 而真实的接听键中心在 x≈978，两者差了约 69px——它们**并不是严格的同一竖列**
+        // （微信把功能按钮排成"平均分布"，而接听/挂断是左右对称分列两端）。
+        // 用它校准反而把本来正确的 80.3% 带偏了，实测圈画到了按钮左上角。
+        // 现在改成：只把它当作"方向一致时的微调"，且偏差必须很小（≤2% 屏宽）才采纳；
+        // 超出这个范围说明两者本就不同列，宁可相信实测比例。
         if (win != null && win.root != null) {
             for (String k : X_ANCHOR_KEYS) {
                 AccessibilityNodeInfo n = findNodeStatic(win.root, k);
                 if (n == null) continue;
                 Rect rect = new Rect();
                 n.getBoundsInScreen(rect);
-                if (rect.width() > 0 && rect.exactCenterX() > w * 0.5f) {
-                    x = rect.exactCenterX();
-                    cal.append("；并用「").append(k).append("」校准横坐标 → x=").append(Math.round(x));
-                    break;
+                if (rect.width() <= 0) continue;
+                float cx = rect.exactCenterX();
+                if (cx <= w * 0.5f) continue;         // 只看右半屏的按钮
+                float diff = Math.abs(cx - x);
+                if (diff <= w * X_ANCHOR_TOLERANCE) {
+                    x = cx;
+                    cal.append("；并用「").append(k).append("」微调横坐标（差 ")
+                            .append(Math.round(diff)).append("px）→ x=").append(Math.round(x));
+                } else {
+                    cal.append("；「").append(k).append("」中心 x=").append(Math.round(cx))
+                            .append(" 与接听键估算位置差 ").append(Math.round(diff))
+                            .append("px，超过 ")
+                            .append(Math.round(w * X_ANCHOR_TOLERANCE))
+                            .append("px 说明不同列，忽略它、仍用实测比例");
                 }
+                break;
             }
         }
         CallDiag.log("接听", cal.toString());

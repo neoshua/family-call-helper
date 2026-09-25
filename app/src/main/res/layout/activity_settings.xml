@@ -393,6 +393,18 @@
             android:lineSpacingExtra="4dp"
             android:textSize="17sp"/>
 
+        <!-- 最近几次"微信有来电、但名单里没有他"的人：直接告诉用户该往哪填 -->
+        <TextView
+            android:id="@+id/tv_unmatched"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="#FFF4E5"
+            android:lineSpacingExtra="4dp"
+            android:padding="14dp"
+            android:textSize="16sp"
+            android:visibility="gone"/>
+
         <Button
             android:id="@+id/btn_open_diag"
             android:layout_width="match_parent"

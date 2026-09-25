@@ -71,12 +71,22 @@ public final class GuideOverlay {
 
     /** 来电时显示指引。没有权限 / 用户关掉了开关时静默跳过 */
     public static synchronized void show(Context ctx, String caller, boolean autoAnswer) {
-        show(ctx, caller, autoAnswer, false);
+        show(ctx, caller, autoAnswer, false, 0L);
+    }
+
+    /**
+     * 来电时显示指引，并在顶部提示里画出自动接听倒计时。
+     *
+     * @param autoDeadlineAt 自动接听的截止时刻（毫秒时间戳）。传 0 表示没有自动接听。
+     */
+    public static synchronized void show(Context ctx, String caller, boolean autoAnswer,
+                                         long autoDeadlineAt) {
+        show(ctx, caller, autoAnswer, false, autoDeadlineAt);
     }
 
     /** 设置页「试听」用：此时并没有真实来电界面，强制画出圆圈只为了演示 */
     public static synchronized void showDemo(Context ctx, String caller) {
-        show(ctx, caller, false, true);
+        show(ctx, caller, false, true, 0L);
     }
 
     /**
@@ -84,7 +94,7 @@ public final class GuideOverlay {
      *                  才该画圈，否则会把老人指向一个空位置（见下面 ringOnly 的说明）。
      */
     private static synchronized void show(Context ctx, String caller, boolean autoAnswer,
-                                          boolean forceRing) {
+                                          boolean forceRing, long autoDeadlineAt) {
         if (ctx == null) return;
         Context app = ctx.getApplicationContext();
         if (!isEnabled(app)) return;
@@ -112,7 +122,10 @@ public final class GuideOverlay {
             int[] p = CallHelperAccessibilityService.answerPoint(app);
 
             // ① 指示层：整层不接收触摸，事件穿透到微信
-            View layer = new GuideLayerView(app, p[0], p[1], p[2], caller, autoAnswer, fullScreen);
+            GuideLayerView layerView = new GuideLayerView(
+                    app, p[0], p[1], p[2], caller, autoAnswer, fullScreen);
+            layerView.setAutoDeadline(autoDeadlineAt);
+            View layer = layerView;
             WindowManager.LayoutParams lp1 = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
@@ -250,6 +263,8 @@ public final class GuideOverlay {
         private final boolean mAuto;
         private final boolean mFullScreen; // 是否画圈（只有全屏来电界面才画）
         private final float mDensity;
+        /** 自动接听截止时刻（毫秒时间戳，0 = 没有自动接听）。用于在提示里画倒计时 */
+        private long mAutoDeadlineAt = 0L;
 
         GuideLayerView(Context c, int cx, int cy, int r, String caller, boolean auto,
                        boolean fullScreen) {
@@ -274,15 +289,20 @@ public final class GuideOverlay {
             mLabel.setColor(0xFF16A34A);
             mLabelText.setColor(Color.WHITE);
             mLabelText.setTypeface(Typeface.DEFAULT_BOLD);
-            mLabelText.setTextSize(28);
+            // 【v1.12】适老化：圈上的「点这里接听」放大到 34sp（原 28sp）。
+            // 用户反馈"提示文案太小了"，老人戴老花镜也未必看得清，宁可大一点。
+            mLabelText.setTextSize(34);
             mLabelText.setTextAlign(Paint.Align.CENTER);
 
             mArrow.setColor(0xFF16A34A);
             mArrow.setStyle(Paint.Style.FILL);
 
-            mTipBg.setColor(0xCC000000);
+            mTipBg.setColor(0xE6000000);
             mTipText.setColor(Color.WHITE);
-            mTipText.setTextSize(17);
+            mTipText.setTypeface(Typeface.DEFAULT_BOLD);
+            // 【v1.12】顶部提示同样放大：17sp → 26sp，并加粗。
+            // 这行字是老人最先看到的信息（谁打来的），太小等于没说。
+            mTipText.setTextSize(26);
             mTipText.setTextAlign(Paint.Align.CENTER);
         }
 
@@ -330,37 +350,67 @@ public final class GuideOverlay {
 
             // 顶部提示：谁打来的 + 怎么操作。
             // 画圈时提示跟着圆圈居中；只提示时（屏幕上还没有接听键）居中在屏幕顶部。
+            // 【v1.12】字号放大后改成「最多两行」绘制：第一行"谁打来的"，
+            // 第二行"该怎么做"。字大 + 分行，远看也清楚。
             float anchorX = mFullScreen ? mCx : getWidth() / 2f;
-            String tip = tipText();
-            float tipW = mTipText.measureText(tip) + 40 * mDensity;
-            float tipH = 44 * mDensity;
-            float tipTop = 122 * mDensity;
+            String line1 = tipLine1();
+            String line2 = tipLine2();
+            float padX = 36 * mDensity;
+            float lineH = mTipText.getFontMetrics().descent
+                    - mTipText.getFontMetrics().ascent + 12 * mDensity;
+            float tipW = Math.max(mTipText.measureText(line1),
+                    line2.isEmpty() ? 0 : mTipText.measureText(line2)) + padX * 2;
+            float tipH = lineH * (line2.isEmpty() ? 1 : 2) + 26 * mDensity;
+            float tipTop = 150 * mDensity;
+            // 防呆：窄屏上文字可能超出屏幕，收窄并夹回可视区域
+            float maxW = getWidth() - 24 * mDensity;
+            if (tipW > maxW) tipW = maxW;
             float left = anchorX - tipW / 2;
-            // 防呆：窄屏上文字可能超出屏幕，夹回可视区域
             if (left < 12 * mDensity) left = 12 * mDensity;
             if (left + tipW > getWidth() - 12 * mDensity) {
                 left = Math.max(12 * mDensity, getWidth() - 12 * mDensity - tipW);
             }
             RectF tipBox = new RectF(left, tipTop, left + tipW, tipTop + tipH);
-            canvas.drawRoundRect(tipBox, 12 * mDensity, 12 * mDensity, mTipBg);
+            canvas.drawRoundRect(tipBox, 20 * mDensity, 20 * mDensity, mTipBg);
+
             Paint.FontMetrics tfm = mTipText.getFontMetrics();
-            canvas.drawText(tip, tipBox.centerX(),
-                    tipBox.centerY() - (tfm.ascent + tfm.descent) / 2, mTipText);
+            float firstBaseline = tipBox.top + 13 * mDensity - tfm.ascent;
+            canvas.drawText(line1, tipBox.centerX(), firstBaseline, mTipText);
+            if (!line2.isEmpty()) {
+                canvas.drawText(line2, tipBox.centerX(), firstBaseline + lineH, mTipText);
+            }
 
             // 脉冲动画：每 40ms 重绘一帧（视图移除后自动停止）
             if (isAttachedToWindow()) postInvalidateDelayed(40L);
         }
 
-        /** 提示语要跟"当前屏幕上到底有没有接听键"对上，不能指着一个不存在的按钮说话 */
-        private String tipText() {
-            if (mFullScreen) {
-                return mAuto
-                        ? (mCaller + " 来电话了 · 正在自动接听…")
-                        : (mCaller + " 来电话了 · 想接就点绿色圆圈；不想接点左边的红色按钮");
+        /** 第一行：谁打来的（大号、最关键的一行） */
+        private String tipLine1() {
+            return mCaller + " 来电话了";
+        }
+
+        /**
+         * 第二行：现在该做什么。
+         * 提示语要跟"当前屏幕上到底有没有接听键"对上，不能指着一个不存在的按钮说话。
+         * 【v1.12】自动接听时把剩余秒数写在这儿，老人抬眼就能看到倒计时。
+         */
+        private String tipLine2() {
+            if (mAuto) {
+                long remain = mAutoDeadlineAt - System.currentTimeMillis();
+                int sec = (int) Math.max(0, (remain + 999) / 1000);
+                if (mAutoDeadlineAt > 0 && sec > 0) {
+                    return "正在自动接听，还剩 " + sec + " 秒";
+                }
+                return "正在自动接听…";
             }
-            return mAuto
-                    ? (mCaller + " 来电话了 · 正在打开接听界面…")
-                    : (mCaller + " 来电话了 · 请点一下屏幕上的微信来电");
+            return mFullScreen
+                    ? "请点绿色圆圈里的按钮"
+                    : "请点一下屏幕上的微信来电";
+        }
+
+        /** 自动接听截止时刻（0 = 没有自动接听）。由外部设置，用于画倒计时 */
+        void setAutoDeadline(long at) {
+            mAutoDeadlineAt = at;
         }
     }
 

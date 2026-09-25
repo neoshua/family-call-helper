@@ -36,8 +36,9 @@ public final class CallDiag {
 
     private static final String FILE_NAME = "call_diag.log";
     /** 文件超过这个大小就整体重写，避免无限增长 */
-    private static final long MAX_FILE_BYTES = 200 * 1024L;
-    private static final int MAX_MEM_LINES = 500;
+    private static final long MAX_FILE_BYTES = 400 * 1024L;
+    /** 内存里保留的行数上限（v1.12 从 500 提到 1500：用户希望记录多一点便于排查） */
+    private static final int MAX_MEM_LINES = 1500;
 
     private static final Object LOCK = new Object();
     private static final Deque<String> LINES = new ArrayDeque<String>();
@@ -71,6 +72,51 @@ public final class CallDiag {
             while (LINES.size() > MAX_MEM_LINES) LINES.pollFirst();
         }
         appendToFile(line);
+    }
+
+    /**
+     * 记一条「环境快照」：机型、系统、屏幕、微信版本、各项权限、名单与开关状态。
+     *
+     * 为什么要在每次来电时都记一次：出问题的大多是"换了个手机/升级了微信/权限被系统收回"，
+     * 只看单条日志很难判断是不是环境变了。快照能把"当时这台手机到底什么状态"完整留档，
+     * 用户复现一次后把记录发过来，就能直接比对。
+     */
+    public static void snapshot(Context ctx, String why) {
+        if (ctx == null) return;
+        StringBuilder sb = new StringBuilder();
+        try {
+            sb.append("环境快照（").append(why).append("）");
+            sb.append(" 机型=").append(android.os.Build.MANUFACTURER)
+                    .append(" ").append(android.os.Build.MODEL);
+            sb.append(" 系统=Android ").append(android.os.Build.VERSION.RELEASE)
+                    .append("(API ").append(android.os.Build.VERSION.SDK_INT).append(")");
+            android.util.DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+            sb.append(" 屏幕=").append(dm.widthPixels).append("x").append(dm.heightPixels)
+                    .append(" 密度=").append(dm.density);
+            sb.append(" 微信版本=").append(wechatVersion(ctx));
+            sb.append(" 通知权限=").append(PermissionStatus.isNotificationListener(ctx));
+            sb.append(" 无障碍=").append(PermissionStatus.isAccessibility(ctx));
+            sb.append(" 悬浮窗=").append(PermissionStatus.isOverlay(ctx));
+            sb.append(" | 家人数=").append(WhiteListManager.load(ctx).size())
+                    .append(" 总开关=").append(WhiteListManager.prefs(ctx)
+                            .getBoolean("auto_answer_master", false))
+                    .append(" 屏幕指引=").append(WhiteListManager.prefs(ctx)
+                            .getBoolean("guide_overlay", true));
+        } catch (Throwable t) {
+            sb.append(" 环境快照生成失败：").append(t);
+        }
+        log("环境", sb.toString());
+    }
+
+    /** 读取微信的版本号（拿不到就返回「未知」）。微信改版是自动点击失效的首要原因 */
+    public static String wechatVersion(Context ctx) {
+        try {
+            android.content.pm.PackageManager pm = ctx.getPackageManager();
+            android.content.pm.PackageInfo pi = pm.getPackageInfo("com.tencent.mm", 0);
+            return pi.versionName + "(" + pi.versionCode + ")";
+        } catch (Throwable t) {
+            return "未知";
+        }
     }
 
     /** 全部记录，按时间正序（最早的在上） */

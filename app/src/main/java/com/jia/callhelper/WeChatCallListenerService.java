@@ -120,6 +120,9 @@ public class WeChatCallListenerService extends NotificationListenerService {
         CallDiag.log("通知", "认定为来电邀请：" + shortOf(all)
                 + " → 来电人=" + caller + " 视频=" + video
                 + "（渠道=" + channel + " flags=" + n.flags + "）");
+        // 【v1.12】通知里的名字通常比界面猜的更准（通知标题就是微信里的备注名），
+        // 所以先让会话用它重匹配一次名单，再决定要不要新开会话。
+        CallSessionManager.refineCaller(this, caller);
         CallSessionManager.startCall(this, caller, video, pi);
     }
 

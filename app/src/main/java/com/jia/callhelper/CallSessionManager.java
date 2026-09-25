@@ -65,8 +65,13 @@ public class CallSessionManager {
          * 而 App 里配置的称呼是家人自己写的（「大儿子」「闺女」）——
          * 老人一听就知道是谁打来的。
          * 不在名单里的来电没有配置称呼，只能退回微信显示的名字。
+         *
+         * 【v1.12 改为非 final】无障碍与通知两条通道会先后触发，
+         * 后到的那个可能带着更准的名字（通知里的备注名通常比界面猜的更可靠）。
+         * 一旦拿到能匹配名单的名字，就用配置的称呼把这里覆盖掉，
+         * 保证念给老人的始终是「丈母娘」而不是「hh」。
          */
-        public final String displayName;
+        public volatile String displayName;
         public final boolean video;
         /** 微信来电通知的 contentIntent：可拉起微信真实的通话界面（点击接听要靠它） */
         public final PendingIntent openIntent;
@@ -81,6 +86,8 @@ public class CallSessionManager {
         public volatile boolean fullScreenSeen = false; // 是否出现过"全屏来电界面"（决定指引画圈还是只提示）
         public volatile int goneTicks = 0;   // 连续几次没看到微信来电界面
         public volatile int modeTicks = 0;   // 连续几次检测到系统音频处于通话状态
+        /** 自动接听失败后的重试次数（见 sRetryAccept）。微信界面常比通知晚出现，不重试就会错过整通电话 */
+        public volatile int retryCount = 0;
 
         Session(String caller, String displayName, boolean video, PendingIntent openIntent) {
             this.caller = caller;
@@ -97,8 +104,13 @@ public class CallSessionManager {
     private static final int CALL_NOTIFY_ID = 2001;
     private static final long[] VIBRATE_PATTERN = {0, 700, 500, 700, 500};
 
-    /** 播报间隔：一句完整提示大约念 5~7 秒，留出余量，避免上一句被下一句打断 */
-    private static final long ANNOUNCE_INTERVAL_MS = 8000L;
+    /**
+     * 播报间隔。自动接听倒计时期间要每秒级更新（播报 + 屏幕上的数字都要跳），
+     * 所以这里取 2.5 秒：既够老人听完一句"X 秒后自动接听"，又不会太密。
+     */
+    private static final long ANNOUNCE_INTERVAL_MS = 2500L;
+    /** 自动接听倒计时播报的上限：超过这个秒数就只说一次总时长，不逐秒念 */
+    private static final int AUTO_COUNTDOWN_MAX_SEC = 30;
     /** 守护检测间隔：负责"接通了就停、挂断了也停" */
     private static final long WATCH_INTERVAL_MS = 1500L;
     /** 给语音引擎的等待窗口：8 × 500ms = 4 秒，确认不可用才改响铃 */
@@ -159,7 +171,8 @@ public class CallSessionManager {
             sSession.autoAnswer = true;
             sSession.autoAnswerAt = System.currentTimeMillis() + delay * 1000L;
         }
-        // 把「这次为什么接 / 为什么不接」记下来：这是排查「没自动接听」的第一现场
+        // 把「这次为什么接 / 为什么不接」记下来：这是排查「没自动接听」的第一现场。
+        // 【v1.12】未命中时把"该怎么做"直接写进记录，用户一看就知道要填什么。
         StringBuilder why = new StringBuilder();
         why.append("来电：微信显示名=").append(caller)
                 .append(" 播报称呼=").append(displayName)
@@ -170,13 +183,18 @@ public class CallSessionManager {
         if (sSession.autoAnswer) {
             why.append(" → ").append(delay).append(" 秒后自动接听");
         } else if (match == null) {
-            why.append(" → 只提醒：这个人不在家人名单里");
+            why.append(" → 只提醒：这个人不在家人名单里。微信显示的是「").append(caller)
+                    .append("」，请到设置→添加家人，把「").append(caller)
+                    .append("」填进他的「微信备注名」（只填「称呼」匹配不上）。");
         } else if (!match.auto) {
-            why.append(" → 只提醒：该联系人的「自动接听」没打开");
+            why.append(" → 只提醒：联系人是「").append(match.name)
+                    .append("」，但他的「自动接听」开关没打开");
         } else {
             why.append(" → 只提醒：设置页的「自动接听」总开关没打开");
         }
         CallDiag.log("来电", why.toString());
+        // 每次都记一份环境快照：换机、升级微信、权限被系统收回，都能从这里看出来
+        CallDiag.snapshot(app, "来电时");
 
         acquireWakeLock(app);
         startVibration(app);
@@ -189,7 +207,8 @@ public class CallSessionManager {
         // 屏幕上圈出接听键，让老人看得见该点哪里。
         // 注意：只有"全屏来电界面"才有接听键可圈；若此刻屏幕上只有通知/横幅，
         // GuideOverlay 会只显示一条提示而不画圈，避免圈到一个空位置误导老人。
-        GuideOverlay.show(app, sSession.displayName, sSession.autoAnswer);
+        GuideOverlay.show(app, sSession.displayName, sSession.autoAnswer,
+                sSession.autoAnswer ? sSession.autoAnswerAt : 0L);
 
         // 记录当前的界面形态：三种形态（全屏 / 通知栏 / 顶部横幅）要区别对待
         CallHelperAccessibilityService svc0 = CallHelperAccessibilityService.get();
@@ -218,8 +237,48 @@ public class CallSessionManager {
     /** 无障碍服务看到微信来电界面时调用（可能与通知重复触发，内部自动去重） */
     public static synchronized void onIncomingViaA11y(Context ctx, String caller, boolean video) {
         Session s = sSession;
-        if (s != null && !s.ended) return; // 通知已经先触发了，忽略
+        if (s != null && !s.ended) {
+            // 【v1.12】会话已经在跑了（通知先到）。这里不要直接忽略——
+            // 无障碍从界面猜出来的名字，有时比通知标题更接近"微信里显示的名字"，
+            // 也可能通知先到时名字没拿到。所以这里补一次"用新名字重匹配名单"，
+            // 只要匹配上了就把念给老人的称呼换成配置的那个。
+            refineCaller(ctx, caller);
+            return;
+        }
         startCall(ctx, caller, video, null);
+    }
+
+    /**
+     * 用后来拿到的一个"微信里显示的名字"重试匹配家人名单。
+     *
+     * 两条通道（通知 / 无障碍）各自能拿到的名字未必相同：通知标题通常是备注名，
+     * 而界面上能读到的可能是昵称。只要有任意一个能匹配上名单，
+     * 就把播报称呼换成 App 里配置的称呼（老人听得懂的「丈母娘」而不是「hh」）。
+     */
+    public static synchronized void refineCaller(Context ctx, String caller) {
+        Session s = sSession;
+        if (s == null || s.ended || ctx == null) return;
+        if (caller == null || caller.trim().isEmpty()) return;
+        String c = caller.trim();
+        // 已经用的是配置称呼（说明之前就匹配上了），不必再动
+        WhiteListManager.Entry hit = WhiteListManager.matchQuiet(ctx.getApplicationContext(), c);
+        if (hit == null) return;
+        if (hit.name != null && !hit.name.equals(s.displayName)) {
+            CallDiag.log("来电", "补充识别到微信显示名「" + c + "」→ 播报称呼修正为「"
+                    + hit.name + "」（原为「" + s.displayName + "」）");
+            s.displayName = hit.name;
+        }
+        // 名字对上了，顺便重新判断一次是否能自动接听
+        boolean master = WhiteListManager.prefs(ctx).getBoolean("auto_answer_master", false);
+        if (hit.auto && master && !s.autoAnswer && !s.handled) {
+            int delay = WhiteListManager.prefs(ctx)
+                    .getInt("auto_delay_sec", DEFAULT_AUTO_DELAY_SEC);
+            s.autoAnswer = true;
+            s.autoAnswerAt = System.currentTimeMillis() + delay * 1000L;
+            CallDiag.log("来电", "补充识别后满足自动接听条件 → " + delay + " 秒后自动接听");
+            sHandler.removeCallbacks(sAutoRun);
+            sHandler.postDelayed(sAutoRun, delay * 1000L);
+        }
     }
 
     /**
@@ -237,12 +296,27 @@ public class CallSessionManager {
      */
     public static synchronized void performAccept(boolean auto) {
         Session s = sSession;
-        if (s == null || s.handled || s.ended) return;
+        if (s == null || s.handled || s.ended) {
+            // 【v1.12】这里以前是静默 return，导致"为什么没执行自动接听"完全查不到。
+            // 现在把拦下的原因也记一笔，运行记录里就能看到"到底有没有尝试过"。
+            if (s != null) {
+                CallDiag.log("接听", "本次接听请求被忽略（handled=" + s.handled
+                        + " ended=" + s.ended + "）");
+            }
+            return;
+        }
         s.handled = true;
         // 自动点击期间收起屏幕指引：此时不需要老人动手，
         // 而且浮层可能干扰"当前前台是不是微信"的判断
         GuideOverlay.hide();
         sPullAttempt = 0;
+        // 记一次"开始自动接听"的现场：这个时候最容易看出环境对不对
+        CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+        CallDiag.log("接听", "开始自动接听（auto=" + auto + "）"
+                + " 无障碍服务=" + (svc != null)
+                + " 微信在前台=" + (svc != null && svc.isWeChatForeground())
+                + " 界面形态=" + (svc != null ? uiStateName(svc.callUiState()) : "未知")
+                + " 有通知跳转=" + (s.openIntent != null));
         sHandler.removeCallbacks(sEnsureFullScreen);
         sHandler.postDelayed(sEnsureFullScreen, 300L);
     }
@@ -302,8 +376,38 @@ public class CallSessionManager {
 
         sPullAttempt++;
         if (sPullAttempt > MAX_PULL_ATTEMPTS) {
+            // 【v1.12 重要兜底】"拉不起来"不等于"没有接听键"。
+            // 微信界面是完全自绘的，无障碍经常读不到任何节点（canReadUiText=false），
+            // 这时 isFullScreenCallUi() 只能靠"窗口是否铺满整屏"来判断，
+            // 而某些 ROM 连窗口 bounds 都给不全 → 判定永远是 false，
+            // 于是本来就在屏幕上的全屏来电界面被误判成"还没拉起来"，
+            // 一直拉到超时都不点，表现为"整通电话都没自动接听"（用户实测就是这个）。
+            // 所以最后一轮改为：先看微信到底在不在前台——
+            //   在 → 直接按几何/坐标去点（点上就接上了，点不中也不会更糟，
+            //        因为此刻屏幕上就是微信的来电页，右下角本就是接听键）
+            //   不在 → 才真的放弃，交给老人自己点。
+            boolean wechatFront = svc.isWeChatForeground();
+            if (wechatFront) {
+                CallDiag.log("接听", "尝试拉起 " + MAX_PULL_ATTEMPTS
+                        + " 次仍未能确认「全屏来电界面」（微信界面为自绘、读不到节点），"
+                        + "但微信确实在前台 → 按几何/坐标直接尝试点击接听键");
+                s.fullScreenSeen = true;
+                WeChatClicker.answerWithRetry(CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
+                        new WeChatClicker.Callback() {
+                            @Override
+                            public void onResult(boolean clicked) {
+                                if (clicked) {
+                                    CallDiag.log("接听", "接听流程结束：已接上或已尽力");
+                                } else {
+                                    onAcceptFailed();
+                                }
+                            }
+                        });
+                return;
+            }
             CallDiag.log("接听", "尝试拉起全屏来电界面 " + MAX_PULL_ATTEMPTS
-                    + " 次仍未出现（可能只有通知，或被系统限制了后台弹窗）→ 交给老人自己点");
+                    + " 次仍未出现，且微信不在前台（可能只有通知，或被系统限制了后台弹窗）"
+                    + " → 交给老人自己点");
             onAcceptFailed();
             return;
         }
@@ -313,9 +417,16 @@ public class CallSessionManager {
             KeyguardManager km = (KeyguardManager) sApp.getSystemService(Context.KEYGUARD_SERVICE);
             locked = km != null && km.isKeyguardLocked();
         } catch (Exception ignore) {}
+        // 【v1.12】把这一步的"现场"记全：形态、锁屏、微信在不在前台、窗口能不能读到内容。
+        // 排查"没自动接听"时，这几项就能直接定位是权限、锁屏、还是微信改版导致。
+        CallHelperAccessibilityService.WeChatWin win = svc.debugWeChatWindow();
         CallDiag.log("接听", "第 " + sPullAttempt + "/" + MAX_PULL_ATTEMPTS
                 + " 次：当前不是全屏来电界面（形态=" + uiStateName(state)
-                + " 锁屏=" + locked + "）→ 尝试拉起");
+                + " 锁屏=" + locked
+                + " 微信在前台=" + svc.isWeChatForeground()
+                + " 微信窗口=" + (win == null ? "拿不到" : win.bounds.toShortString())
+                + " 界面文字=" + (win != null && svc.canReadUiText(win.root) ? "可读" : "读不到")
+                + "）→ 尝试拉起");
         // 隔次发送跳转：微信从通知跳到"全屏来电界面"本身需要几百毫秒到一两秒，
         // 每轮都发一次会反复弹微信。所以只发送、中间几轮留给它自己渲染，只做确认。
         if (sPullAttempt % 2 == 1) {
@@ -485,9 +596,11 @@ public class CallSessionManager {
                 if (!s.fullScreenSeen) {
                     s.fullScreenSeen = true;
                     CallDiag.log("提醒", "界面已变为全屏来电界面 → 把屏幕指引升级为「圈出接听键」");
-                    if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer);
+                    if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer,
+                            s.autoAnswer ? s.autoAnswerAt : 0L);
                 } else if (!GuideOverlay.showingRing()) {
-                    if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer);
+                    if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer,
+                            s.autoAnswer ? s.autoAnswerAt : 0L);
                 }
             }
 
@@ -529,25 +642,29 @@ public class CallSessionManager {
     };
 
     /**
-     * 语音优先：先给语音引擎最多 4 秒，确认不可用才响铃。
-     * 任何时刻只要语音可用，就把铃声停掉（见类注释【规则一】）。
+     * 语音引擎的等待与兜底。
+     *
+     * 【v1.12 策略调整，用户要求】**不再降级为铃声**。
+     * 原因：微信来电本身就有铃声，我们自己再响一遍等于两个声音叠着吵，
+     * 对老人是纯粹噪音，还盖住了我们想让他听清的语音提示。
+     * 所以现在只做两件事：
+     *   ① 给引擎最多 4 秒加载时间，就绪了就只播报；
+     *   ② 始终不可用（手机真的没装中文引擎）就记一条日志说明原因，
+     *      提醒仍靠**震动 + 屏幕指引**传递，绝不额外响铃。
      */
     private static void waitForTtsThenMaybeRingtone(final int n, final Session token) {
         if (sSession != token || token.ended) return;
         if (TtsSpeaker.isUsable() || TtsSpeaker.isSpeakVerified()) {
-            if (sRingtone != null) stopRingtone();
-            CallDiag.log("提醒", "语音引擎可用 → 只播报，不响铃");
+            CallDiag.log("提醒", "语音引擎可用 → 只播报（不响铃：微信自己的铃声已在响）");
             return;
         }
         if (n >= TTS_WAIT_STEPS) {
             if (sSession != token || token.ended) return;
-            if (TtsSpeaker.isUsable()) {
-                if (sRingtone != null) stopRingtone();
-                return;
-            }
-            CallDiag.log("提醒", "等待 4 秒仍没有语音播报 → 改用铃声兜底。"
-                    + TtsSpeaker.describeProblem());
-            startRingtone(sApp);
+            if (TtsSpeaker.isUsable()) return;
+            // 这里以前会 startRingtone()。按用户要求已去掉：
+            // 微信的来电铃声本身就在响，再叠加一个只会更吵，且盖住语音。
+            CallDiag.log("提醒", "等待 4 秒仍无法语音播报 → 不响铃（微信自带铃声已足够），"
+                    + "改用震动与屏幕指引提醒。" + TtsSpeaker.describeProblem());
             return;
         }
         sHandler.postDelayed(new Runnable() {
@@ -561,28 +678,64 @@ public class CallSessionManager {
     /**
      * 自动点击没能落到微信的接听键上（例如微信界面始终没到前台、被系统拦截等）。
      * 这时不能再装死：语音 + 震动 + 屏幕指引一起上，让老人自己点。
-     * 注意不要额外加铃声——有语音就不响铃。
+     * 【v1.12】不再额外响铃——微信来电铃声已经在响，叠加只会更吵。
      */
     private static synchronized void onAcceptFailed() {
         Session s = sSession;
         if (s == null || s.ended || s.answered) return;
-        CallDiag.log("接听", "自动接听失败 → 改为语音 + 屏幕指引，提醒老人自己点");
+        CallDiag.log("接听", "自动接听失败 → 改为语音 + 震动 + 屏幕指引，提醒老人自己点");
         s.handled = false;      // 放开，让接听流程可以重来（例如老人自己点）
         sFirstAnnounce = true;  // 重新念一遍完整指引
         announce();
 
-        if (!TtsSpeaker.isUsable() && !TtsSpeaker.isSpeakVerified()) {
-            // 连语音都没有：只能用铃声 + 震动，至少能听见
-            if (sApp != null) {
-                startRingtone(sApp);
-                startVibration(sApp);
-            }
+        // 不再调用 startRingtone：微信自己的来电铃声就是最响亮的提醒，
+        // 我们只需要补上"该点哪里"的语音与视觉指引。
+        if (sApp != null) {
+            startVibration(sApp);
+            GuideOverlay.show(sApp, s.displayName, false, 0L);
         }
-        if (sApp != null) GuideOverlay.show(sApp, s.displayName, false);
+
+        // 【v1.12 关键修复】失败后要继续自己重试，而不是等到 8 秒后那一轮就不管了。
+        // 用户实测：整通电话从头到尾都没自动接上——因为旧逻辑里
+        // 「第一次尝试（8 秒）→ 失败 → 只在超时前都不再尝试」，
+        // 而微信来电界面经常是响铃好几秒后才真正铺满全屏，
+        // 第一次尝试时界面还没出来，于是永远错过了。
+        // 现在失败后每 RETRY_AFTER_FAIL_MS 重试一次，直到接通/挂断/超时。
+        sHandler.removeCallbacks(sRetryAccept);
+        sHandler.postDelayed(sRetryAccept, RETRY_AFTER_FAIL_MS);
 
         sHandler.removeCallbacks(sAnnounceLoop);
         sHandler.postDelayed(sAnnounceLoop, ANNOUNCE_INTERVAL_MS);
     }
+
+    /** 自动接听失败后的重试间隔 */
+    private static final long RETRY_AFTER_FAIL_MS = 4000L;
+
+    /**
+     * 失败后的自动重试：把接听流程重新走一遍。
+     * 只在「开着自动接听」且「还没接通/没结束」时才重试，避免打扰只想手动接的场景。
+     */
+    private static final Runnable sRetryAccept = new Runnable() {
+        @Override
+        public void run() {
+            Session s = sSession;
+            if (s == null || s.ended || s.answered) return;
+            if (!s.autoAnswer) return;                 // 本来就是"只提醒"，不重试
+            if (s.retryCount >= MAX_ACCEPT_RETRY) {
+                CallDiag.log("接听", "自动接听已重试 " + MAX_ACCEPT_RETRY
+                        + " 次仍未成功 → 停止重试，继续用语音+屏幕指引提醒老人自己点");
+                return;
+            }
+            s.retryCount++;
+            CallDiag.log("接听", "第 " + s.retryCount + "/" + MAX_ACCEPT_RETRY
+                    + " 次重试自动接听（上次没点到微信的接听键）");
+            s.handled = false;
+            performAccept(true);
+        }
+    };
+
+    /** 一次来电里最多重试几次自动接听 */
+    private static final int MAX_ACCEPT_RETRY = 4;
 
     private static synchronized void markAnswered(String reason, Context ctx) {
         Session s = sSession;
@@ -621,15 +774,23 @@ public class CallSessionManager {
     private static void announce() {
         Session s = sSession;
         if (s == null || s.ended || s.answered) return;
-        if (sRingtone != null && TtsSpeaker.isUsable()) {
-            stopRingtone(); // 语音可用了就别再响铃（见类注释【规则一】）
-        }
+        if (sRingtone != null) stopRingtone(); // 本版本不再使用铃声（见 waitForTtsThenMaybeRingtone）
 
         long remain = (s.autoAnswerAt - System.currentTimeMillis()) / 1000L + 1;
         // 先看当前是全屏界面还是只有通知：两种情况下老人该做的动作不一样，
         // 播报内容必须跟着变，否则屏幕上没有绿色圆圈却让他"点绿色圆圈"，只会让人懵。
         boolean fullScreen = isFullScreenCallUi();
         s.fullScreenSeen = s.fullScreenSeen || fullScreen;
+
+        // 【v1.12】自动接听开启时，倒计时必须一直念、而且要念得准。
+        // 之前只有"整句提示"里带一次秒数，之后每 8 秒才更新，老人听到的
+        // 倒计时是跳着走的（8 秒 → 0 秒），等于没有倒计时。
+        // 现在自动接听期间改成每 2 秒报一次剩余秒数，让老人心里有数。
+        if (s.autoAnswer && remain > 0 && remain <= AUTO_COUNTDOWN_MAX_SEC && !sFirstAnnounce) {
+            TtsSpeaker.speak(remain + "秒后自动接听。");
+            sAnnounceCount++;
+            return;
+        }
 
         StringBuilder sb = new StringBuilder();
         if (sFirstAnnounce) {
@@ -643,14 +804,14 @@ public class CallSessionManager {
                         ? "屏幕上圈出的是绿色接听按钮。不想接就点左边的红色按钮。"
                         : "正在打开微信接听界面，请稍等。");
             } else if (fullScreen) {
-                sb.append("想接，就点屏幕上圈出的绿色按钮；不想接，就点左边的红色按钮。");
+                sb.append("请点屏幕上圈出的绿色接听按钮。不想接就点左边的红色按钮。");
             } else {
                 sb.append("请先点一下屏幕上的微信来电，打开后再点绿色的接听按钮。");
             }
         } else if (s.autoAnswer && remain > 0) {
-            sb.append("还有 ").append(remain).append(" 秒自动接听。");
+            sb.append(remain).append("秒后自动接听。");
         } else if (fullScreen) {
-            sb.append("请点屏幕上圈出的绿色按钮接听。");
+            sb.append("请点屏幕上圈出的绿色接听按钮。");
         } else {
             sb.append("请点一下屏幕上的微信来电，打开接听界面。");
         }
@@ -798,6 +959,7 @@ public class CallSessionManager {
         sHandler.removeCallbacks(sWatchdog);
         sHandler.removeCallbacks(sTimeout);
         sHandler.removeCallbacks(sEnsureFullScreen);
+        sHandler.removeCallbacks(sRetryAccept);
         sPullAttempt = 0;
         WeChatClicker.cancel();
         stopSoundsAndVibration();

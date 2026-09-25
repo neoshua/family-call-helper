@@ -476,6 +476,38 @@ public class SettingsActivity extends Activity {
         }
         mStatusAutoSummary.setText(sb.toString());
         mStatusAutoSummary.setTextColor(ready ? 0xFF1B7F3B : 0xFFB3261E);
+        updateUnmatchedHint();
+    }
+
+    /**
+     * 「最近来电但没匹配上名单的人」提示。
+     *
+     * 用户实际踩过的坑：微信里显示「hh」，但他把「hh」填成了别人的备注名，
+     * 或者干脆没填进这位家人的备注名里 —— 来电时既不会自动接听，
+     * 播报的还是「hh」（因为名单没命中，只能退回微信显示名）。
+     * 从外面完全看不出问题在哪，所以他反馈的是"没有自动接听"和"播报用昵称"。
+     * 这里把最近几次没匹配上的名字直接列出来，并写清该填到哪，用户照着改一次就好。
+     */
+    private void updateUnmatchedHint() {
+        TextView tv = (TextView) findViewById(R.id.tv_unmatched);
+        if (tv == null) return;
+        List<String> names = WhiteListManager.getUnmatched(this);
+        if (names.isEmpty()) {
+            tv.setVisibility(View.GONE);
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("⚠ 最近有来电没匹配上家人名单\n");
+        sb.append("微信显示的来电人：");
+        for (int i = 0; i < names.size() && i < 4; i++) {
+            if (i > 0) sb.append("、");
+            sb.append("「").append(names.get(i)).append("」");
+        }
+        sb.append("\n\n这些来电不会自动接听，播报时也只能念微信里的名字。\n");
+        sb.append("如果其中某位是你的家人，请到首页点开他的资料，");
+        sb.append("把上面这个名字原样填进「微信备注名」（称呼可以随便写，如「丈母娘」）。");
+        tv.setText(sb.toString());
+        tv.setVisibility(View.VISIBLE);
     }
 
     private void setStatus(TextView tv, boolean ok, String good, String bad) {
