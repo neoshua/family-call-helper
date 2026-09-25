@@ -170,6 +170,36 @@
             android:textColor="@color/textSub"
             android:textSize="15sp"/>
 
+        <Button
+            android:id="@+id/btn_calibrate_answer"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="◎ 校准接听键位置（圈得不准就点这里）"
+            android:textColor="#FFFFFF"
+            android:textSize="19sp"/>
+
+        <TextView
+            android:id="@+id/status_answer_point"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:lineSpacingExtra="3dp"
+            android:text="当前接听键位置"
+            android:textColor="@color/textSub"
+            android:textSize="15sp"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:lineSpacingExtra="3dp"
+            android:text="每台手机的微信接听按钮位置都不太一样，上面的默认位置未必正好。点按钮后会出现一个绿圈浮在屏幕最上层：让家人打个微信电话过来，把圈拖到那个绿色接听按钮上，点「保存这个位置」就行。调好之后，圈的位置和自动点击的位置会一起变准。"
+            android:textColor="@color/textSub"
+            android:textSize="14sp"/>
+
         <!-- 试听 -->
         <TextView
             android:layout_width="wrap_content"

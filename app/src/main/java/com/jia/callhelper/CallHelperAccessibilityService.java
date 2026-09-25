@@ -121,6 +121,11 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     private static final float X_ANCHOR_TOLERANCE = 0.02f;
 
     private static volatile CallHelperAccessibilityService sInstance;
+    /**
+     * 应用上下文（服务还没连上时也要能读到「用户校准过的接听键位置」，
+     * 否则屏幕指引会先按默认位置画一帧，再跳到用户位置，看着像"圈自己跑了"）。
+     */
+    private static volatile Context sAppCtx;
     private static final long SCAN_INTERVAL_MS = 1200;
     private volatile long mLastScanAt = 0;
     private volatile long mLastTreeDumpAt = 0;
@@ -133,6 +138,7 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         sInstance = this;
+        sAppCtx = getApplicationContext();
         CallDiag.init(this);
         CallDiag.log("无障碍", "服务已连接");
     }
@@ -721,6 +727,7 @@ public class CallHelperAccessibilityService extends AccessibilityService {
      * 与"实际点的位置"永远是同一个点。
      */
     public static int[] answerPoint(Context ctx) {
+        if (sAppCtx == null && ctx != null) sAppCtx = ctx.getApplicationContext();
         CallHelperAccessibilityService svc = sInstance;
         WeChatWin win = svc != null ? svc.findWeChatWindow() : null;
         int[] size = svc != null ? svc.screenSize() : screenSizeFrom(ctx);
@@ -730,6 +737,23 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     private static int[] answerPointInternal(WeChatWin win, int[] size, int navBarHeight) {
         int w = size[0], h = size[1];
         if (w <= 0 || h <= 0) return new int[]{0, 0, 0};
+
+        // 【v1.16 新增：用户自己校准过的位置优先】
+        // 不同机型/微信版本/导航方式下这个绿钮的位置都不一样，默认比例不可能每台都准。
+        // 用户在「设置 → 校准接听键位置」里亲手拖过之后，这里无条件用他指定的位置：
+        // 圈画在这里，自动点击也点在这里，两者永远是同一个点。
+        Context ctx0 = sAppCtx;
+        if (ctx0 == null) {
+            CallHelperAccessibilityService svc0 = sInstance;
+            if (svc0 != null) ctx0 = svc0.getApplicationContext();
+        }
+        if (ctx0 != null && AnswerPointPrefs.isCustomized(ctx0)) {
+            int[] up = AnswerPointPrefs.point(ctx0, w, h);
+            CallDiag.log("接听", "接听键位置=用户校准值（设置页手动调过）→ 中心=("
+                    + up[0] + "," + up[1] + ") 半径=" + up[2]
+                    + "；屏幕=" + w + "x" + h + "（不再做自动微调，避免又把点挪走）");
+            return up;
+        }
 
         // 【v1.15 核心修复：坐标必须落在物理屏幕上】
         // 旧逻辑把"微信窗口"当成基准区，乘以比例算坐标。

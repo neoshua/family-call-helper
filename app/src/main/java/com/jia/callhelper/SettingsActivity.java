@@ -40,6 +40,7 @@ public class SettingsActivity extends Activity {
     private TextView mVolumePct;
     private Switch mAutoMaster;
     private Switch mGuideOverlay;
+    private TextView mAnswerPointStatus;
     private EditText mDelay;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
 
@@ -154,6 +155,29 @@ public class SettingsActivity extends Activity {
             }
         });
 
+        // 【v1.16】接听键位置校准：圈不准时让用户自己把圈拖到正确位置
+        mAnswerPointStatus = (TextView) findViewById(R.id.status_answer_point);
+        bind(R.id.btn_calibrate_answer, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!CalibrationOverlay.canOverlay(SettingsActivity.this)) {
+                    Toast.makeText(SettingsActivity.this,
+                            "需要先开启「显示在其他应用上层」权限（见上面的按钮）",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                CalibrationOverlay.show(SettingsActivity.this);
+                // 退到桌面，方便用户直接打开微信等家人来电
+                Intent home = new Intent(Intent.ACTION_MAIN);
+                home.addCategory(Intent.CATEGORY_HOME);
+                home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try {
+                    startActivity(home);
+                } catch (Exception ignore) {}
+            }
+        });
+        updateAnswerPointStatus();
+
         // 媒体音量（语音播报走媒体通道）
         final AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
         int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
@@ -227,6 +251,12 @@ public class SettingsActivity extends Activity {
             about.setText("版本 " + appVersion() + "\n"
                     + "亲情接听助手 · 仅在本地运行，不联网、不上传数据");
         }
+    }
+
+    /** 显示当前生效的接听键位置（默认 / 已自己校准） */
+    private void updateAnswerPointStatus() {
+        if (mAnswerPointStatus == null) return;
+        mAnswerPointStatus.setText("接听键位置：" + AnswerPointPrefs.describe(this));
     }
 
     /** 读取本应用真实的版本号（versionName），失败时返回 "未知" */
@@ -391,6 +421,8 @@ public class SettingsActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refreshStatus();
+        // 从校准浮层返回时刷新一下「接听键位置」的说明（可能刚保存过）
+        updateAnswerPointStatus();
     }
 
     // ---------------- 权限状态展示 ----------------

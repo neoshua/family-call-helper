@@ -98,6 +98,12 @@ public final class GuideOverlay {
         if (ctx == null) return;
         Context app = ctx.getApplicationContext();
         if (!isEnabled(app)) return;
+        // 正在校准接听键位置时不再画指引：两套圈叠在一起反而看不清，
+        // 而且校准浮层自带工具栏，再叠一个「停止提醒」按钮会互相挡住。
+        if (CalibrationOverlay.isShowing()) {
+            CallDiag.log("指引", "正在校准接听键位置 → 本次不显示来电指引（避免两套圈重叠）");
+            return;
+        }
         if (!canOverlay(app)) {
             CallDiag.log("指引", "没有「显示在其他应用上层」权限，本次不显示屏幕指引");
             return;
