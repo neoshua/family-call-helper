@@ -261,6 +261,12 @@ public class CallSessionManager {
         sHandler.postDelayed(sTimeout, HARD_TIMEOUT_MS);
     }
 
+    /** 当前是否有正在进行（未结束、未接通）的来电会话 */
+    public static synchronized boolean isSessionActive() {
+        Session s = sSession;
+        return s != null && !s.ended && !s.answered;
+    }
+
     /** 无障碍服务看到微信来电界面时调用（可能与通知重复触发，内部自动去重） */
     public static synchronized void onIncomingViaA11y(Context ctx, String caller, boolean video) {
         Session s = sSession;
@@ -557,13 +563,66 @@ public class CallSessionManager {
             Intent i = sApp.getPackageManager().getLaunchIntentForPackage("com.tencent.mm");
             if (i == null) {
                 CallDiag.log("接听", "拉起③失败：拿不到微信的启动入口");
-                return;
+            } else {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+                sApp.startActivity(i);
+                CallDiag.log("接听", "拉起③：已启动微信，期望它把来电页顶到最前");
             }
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-            sApp.startActivity(i);
-            CallDiag.log("接听", "拉起③：已启动微信，期望它把来电页顶到最前");
         } catch (Exception e) {
             CallDiag.log("接听", "拉起③失败（启动微信）：" + e);
+        }
+
+        // ④ 【v1.18 新增】点一下屏幕顶部那条来电横幅。
+        //
+        // 用户实测（图一）：来电时屏幕上只有**桌面顶部的一条微信横幅**
+        // 「老婆 邀请你视频通话」，微信并没有自己弹成全屏。
+        // 这种横幅是系统通知横幅，**点它就会打开微信通话页** —— 这是最自然、
+        // 也最接近"老人自己会做的动作"的方式。旧版本只会发通知 PendingIntent，
+        // 但那个 intent 在部分 ROM 上被系统忽略，于是整通电话都停在这一步。
+        //
+        // 位置：横跨屏幕宽度、紧贴状态栏下方的一块。点其水平中点最保险
+        // （避开右侧可能存在的"展开/收起"小箭头）。
+        try {
+            int[] sc = screenSizeForPull();
+            if (sc[0] > 0) {
+                int y = bannerTapY(sc[1]);
+                int x = sc[0] / 2;
+                CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+                if (svc != null && svc.tapAt(x, y)) {
+                    CallDiag.log("接听", "拉起④：已点屏幕顶部横幅 ("
+                            + x + "," + y + ")，期望它把微信通话页带出来");
+                }
+            }
+        } catch (Exception e) {
+            CallDiag.log("接听", "拉起④失败（点横幅）：" + e);
+        }
+    }
+
+    /**
+     * 顶部横幅应该点哪个高度。
+     *
+     * 实测机型（1220×2712 / 密度 3.25）：横幅在状态栏下方、大约 150~420px 之间。
+     * 这里取状态栏再往下一点的位置（约屏高 6%），保证落在横幅内部，
+     * 而不是点进状态栏（那里会下拉通知栏）。
+     */
+    private static int bannerTapY(int screenH) {
+        int y = Math.round(screenH * 0.06f);
+        if (y < 150) y = 150;
+        if (y > 420) y = 420;
+        return y;
+    }
+
+    private static int[] screenSizeForPull() {
+        if (sApp == null) return new int[]{0, 0};
+        try {
+            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+            android.view.WindowManager wm = (android.view.WindowManager)
+                    sApp.getSystemService(Context.WINDOW_SERVICE);
+            if (wm == null) return new int[]{0, 0};
+            wm.getDefaultDisplay().getRealMetrics(dm);
+            return new int[]{dm.widthPixels, dm.heightPixels};
+        } catch (Exception e) {
+            return new int[]{0, 0};
         }
     }
 

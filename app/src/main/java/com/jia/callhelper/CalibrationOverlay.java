@@ -161,6 +161,21 @@ public final class CalibrationOverlay {
         }
     }
 
+    /**
+     * 把圆圈瞬移到当前"生效位置"（用户校准值或内置默认值）。
+     *
+     * 用处：用户滑动过之后想回到"App 认为对的地方"，点一下即可，
+     * 不用凭记忆拖回去。也方便对比"默认"和"我拖的"差多少。
+     */
+    private static synchronized void jumpToEffective(Context ctx) {
+        int[] p = AnswerPointPrefs.point(ctx, sScreenW, sScreenH);
+        sPos[0] = p[0];
+        sPos[1] = p[1];
+        sPos[2] = p[2] <= 0 ? Math.round(sScreenW * AnswerPointPrefs.DEF_RADIUS) : p[2];
+        placeGrip(ctx);
+        if (sLayer != null) sLayer.invalidate();
+    }
+
     private static final Runnable sAutoHide = new Runnable() {
         @Override
         public void run() {
@@ -278,8 +293,18 @@ public final class CalibrationOverlay {
         title.setText("把绿圈套到微信的接听按钮上");
         title.setTextColor(0xFFFFFFFF);
         title.setTextSize(15);
-        title.setPadding(0, 0, 0, dp(ctx, 6));
+        title.setPadding(0, 0, 0, dp(ctx, 4));
         box.addView(title);
+
+        // 【v1.18】把"圈心是不是真在按钮里"做成一条客观判据：
+        // 微信接听按钮的圆心必定与那个白色电话图标重合，所以把绿圈调到
+        // **白色电话图标正好在圈心**，就是准的——比凭肉眼感觉对齐可靠得多。
+        TextView hint = new TextView(ctx);
+        hint.setText("对准标志：让绿色按钮中间的白色电话图标落在圈的正中心");
+        hint.setTextColor(0xFFB2FFB2);
+        hint.setTextSize(13);
+        hint.setPadding(0, 0, 0, dp(ctx, 6));
+        box.addView(hint);
 
         int step = Math.max(4, Math.round(sScreenW * 0.005f));
         box.addView(arrowRow(ctx, step));
@@ -327,17 +352,19 @@ public final class CalibrationOverlay {
         row.addView(miniBtn(ctx, "✓ 保存这个位置", 0xFF1B7F3B, new View.OnClickListener() {
             @Override public void onClick(View v) { save(v.getContext()); }
         }));
-        row.addView(miniBtn(ctx, "恢复默认", new View.OnClickListener() {
+        row.addView(miniBtn(ctx, "回到默认", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 Context c = v.getContext();
                 AnswerPointPrefs.reset(c);
-                int[] p = AnswerPointPrefs.point(c, sScreenW, sScreenH);
-                sPos[0] = p[0];
-                sPos[1] = p[1];
-                sPos[2] = p[2];
-                placeGrip(c);
-                if (sLayer != null) sLayer.invalidate();
-                Toast.makeText(c, "已恢复成默认位置", Toast.LENGTH_SHORT).show();
+                jumpToEffective(c);
+                Toast.makeText(c, "已回到内置默认位置", Toast.LENGTH_SHORT).show();
+            }
+        }));
+        row.addView(miniBtn(ctx, "回到当前", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Context c = v.getContext();
+                jumpToEffective(c);
+                Toast.makeText(c, "已回到当前生效的位置", Toast.LENGTH_SHORT).show();
             }
         }));
         row.addView(miniBtn(ctx, "✕ 取消", 0xFFB3261E, new View.OnClickListener() {

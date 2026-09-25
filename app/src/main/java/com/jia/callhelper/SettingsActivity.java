@@ -40,6 +40,9 @@ public class SettingsActivity extends Activity {
     private TextView mVolumePct;
     private Switch mAutoMaster;
     private Switch mGuideOverlay;
+    private Switch mGuideRing;
+    private Switch mGuideTip;
+    private Switch mGuideStopBar;
     private TextView mAnswerPointStatus;
     private EditText mDelay;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
@@ -155,6 +158,38 @@ public class SettingsActivity extends Activity {
             }
         });
 
+        // 【v1.18】屏幕提示的三个细分开关：绿圈 / 顶部文字 / 停止按钮。
+        // 用户要求"是否开启绿圈提示，如果用户不需要就不要展示"——
+        // 绿圈虽然对老人友好，但它浮在微信之上，会干扰界面识别，
+        // 所以给能彻底关掉的选项（三个全关 = 只播报语音，不创建任何悬浮窗）。
+        mGuideRing = (Switch) findViewById(R.id.sw_guide_ring);
+        mGuideTip = (Switch) findViewById(R.id.sw_guide_tip);
+        mGuideStopBar = (Switch) findViewById(R.id.sw_guide_stopbar);
+        mGuideRing.setChecked(GuideOverlay.isRingEnabled(this));
+        mGuideTip.setChecked(GuideOverlay.isTipEnabled(this));
+        mGuideStopBar.setChecked(GuideOverlay.isStopBarEnabled(this));
+        mGuideRing.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean on) {
+                GuideOverlay.setRingEnabled(SettingsActivity.this, on);
+                toastGuideSummary();
+            }
+        });
+        mGuideTip.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean on) {
+                GuideOverlay.setTipEnabled(SettingsActivity.this, on);
+                toastGuideSummary();
+            }
+        });
+        mGuideStopBar.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean on) {
+                GuideOverlay.setStopBarEnabled(SettingsActivity.this, on);
+                toastGuideSummary();
+            }
+        });
+
         // 【v1.16】接听键位置校准：圈不准时让用户自己把圈拖到正确位置
         mAnswerPointStatus = (TextView) findViewById(R.id.status_answer_point);
         bind(R.id.btn_calibrate_answer, new View.OnClickListener() {
@@ -251,6 +286,21 @@ public class SettingsActivity extends Activity {
             about.setText("版本 " + appVersion() + "\n"
                     + "亲情接听助手 · 仅在本地运行，不联网、不上传数据");
         }
+    }
+
+    /** 三个细分开关改动后给一句"现在到底会显示什么"的总结，避免用户搞不清组合效果 */
+    private void toastGuideSummary() {
+        String msg;
+        if (GuideOverlay.isVoiceOnly(this)) {
+            msg = "屏幕上不再显示任何提示，来电只播报语音（也不用悬浮窗权限了）";
+        } else {
+            StringBuilder sb = new StringBuilder("来电时会显示：");
+            if (mGuideRing.isChecked()) sb.append("绿圈 ");
+            if (mGuideTip.isChecked()) sb.append("顶部提示 ");
+            if (mGuideStopBar.isChecked()) sb.append("停止提醒按钮 ");
+            msg = sb.toString().trim();
+        }
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
     }
 
     /** 显示当前生效的接听键位置（默认 / 已自己校准） */

@@ -105,11 +105,11 @@ public class CallHelperAccessibilityService extends AccessibilityService {
      * 水平方向还能进一步校准——视频来电界面上方的「摄像头已开 / 模糊背景 / 翻转」
      * 与底部的绿色接听键在同一竖列，用它们的横坐标替换经验值会准得多（见 tapAnswerByRatio）。
      */
-    private static final float ANSWER_X_RATIO = 0.803f;
+    private static final float ANSWER_X_RATIO = AnswerPointPrefs.DEF_X;
     /** 接听键中心距屏幕底部的比例（原点取左下角，见 answerPoint） */
-    private static final float ANSWER_BOTTOM_RATIO = 0.114f;
+    private static final float ANSWER_BOTTOM_RATIO = AnswerPointPrefs.DEF_BOTTOM;
     /** 接听键半径占屏幕宽度的比例（屏幕指引画圈时用） */
-    public static final float ANSWER_RADIUS_RATIO = 0.0885f;
+    public static final float ANSWER_RADIUS_RATIO = AnswerPointPrefs.DEF_RADIUS;
     /** 用于校准接听键横坐标的上方按钮文案 */
     private static final String[] X_ANCHOR_KEYS = {"摄像头已开", "摄像头已关", "模糊背景", "翻转"};
     /**
@@ -339,9 +339,26 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     /** 微信通话界面当前形态 */
     public int callUiState() {
         WeChatWin w = findWeChatWindow();
-        if (w == null || w.root == null) return UI_NONE;
+        if (w == null || w.root == null) {
+            // 【v1.18】窗口读不到，但微信确实在前台（自绘通话页 / 指引浮层干扰活动窗口判定）
+            // → 报"全屏来电界面"。旧实现这里一律返回 UI_NONE，
+            // 导致上层认为"屏幕上没有接听键"，反复拉起却永远不点。
+            //
+            // 收紧条件：必须是**当前有来电会话**且微信在前台，避免离开通话后
+            // 微信留在后台还被误当成来电界面。
+            if (isWeChatForeground() && CallSessionManager.isSessionActive()) {
+                return UI_RINGING;
+            }
+            return UI_NONE;
+        }
         if (isInCall(w.root)) return UI_IN_CALL;
         if (isFullScreenCallUi()) return UI_RINGING;
+        // 读到微信界面、不是通话中、也不是全屏来电页，但**有来电会话在进行**：
+        // 很可能是"微信刚被拉起、页面还没铺开"的中间态。报 UI_RINGING 让上层继续尝试，
+        // 比报 UI_NONE 让上层干等着强（这正是不肯点的另一种情形）。
+        if (CallSessionManager.isSessionActive() && isWeChatForeground()) {
+            return UI_RINGING;
+        }
         return UI_NONE;
     }
 
@@ -497,10 +514,29 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         WeChatWin win = findWeChatWindow();
         AccessibilityNodeInfo root = win != null ? win.root : null;
         if (root == null) {
-            // 连微信窗口都没有：屏幕上可能是通知栏/横幅，也可能是别的应用。
-            // 这种情况**不做坐标盲点**——盲点等于在别人脸上乱戳，
-            // 而且即使戳中也没有接听键。交给上层去把全屏界面拉出来。
-            CallDiag.log("接听", "拿不到微信界面（可能只有通知/横幅）→ 不盲点，先要求拉起全屏来电界面");
+            // 【v1.18 关键修正】之前这里直接 return RESULT_NOT_WECHAT，
+            // 造成"读不到节点就永远不点"。详见下面的说明。
+            //
+            // 微信的通话界面是**整页自绘**的，无障碍经常一个节点都读不到；
+            // 我们自己画的指引圈浮在它上面，还会进一步干扰"活动窗口"的判定。
+            // 用户实测日志里，全屏来电页明明就在眼前，却反复写
+            // 「拿不到微信界面 → 不盲点」和「微信在前台=false」，于是一整通电话
+            // 都不肯点一下，最后靠用户手动接听 —— 这就是"半自动"的真正原因。
+            //
+            // 现在的策略：只要微信确实在前台（或无障碍看到的就是通话界面），
+            // 就算读不到节点，也按**用户校准过的物理比例坐标**点一次。
+            // 这个坐标是用户对着真实来电界面亲手校准的，此刻屏幕右下角就是接听键，
+            // 点在那里是安全的。
+            boolean weChatFront = isWeChatForeground();
+            if (weChatFront) {
+                CallDiag.log("接听", "拿不到微信节点（整页自绘），但微信确在前台"
+                        + " → 按校准坐标执行一次手势点击（不再因为读不到节点就放弃）");
+                if (tapAnswerByRatio()) return RESULT_CLICKED_PRECISE;
+                CallDiag.log("接听", "手势点击下发失败");
+                return RESULT_NO_WINDOW;
+            }
+            CallDiag.log("接听", "微信不在前台（屏幕上可能是通知栏/横幅/桌面）"
+                    + "→ 不盲点，先要求把全屏来电界面拉出来");
             return RESULT_NOT_WECHAT;
         }
         if (isInCall(root)) {
@@ -969,8 +1005,47 @@ public class CallHelperAccessibilityService extends AccessibilityService {
      * 因为我们自己会在最上面画屏幕指引浮层（见 GuideOverlay），
      * 用后者会把浮层误当成"微信不在前台"。
      */
+    /**
+     * 微信是不是现在正显示在屏幕上。
+     *
+     * 【v1.18 修正】旧实现只问一句"能不能拿到微信窗口内容就返回"，这太脆弱了：
+     * 微信的通话页是**整页自绘**的，无障碍经常读不到任何节点；
+     * 再加上悬浮窗浮在上面时，活动窗口可能被判成"不是微信"。
+     * 结果日志里反复出现「微信在前台=false」，上层据此判定"点不了"，
+     * 明明全屏来电页就在眼前却不肯点 —— 用户实测反馈的正是这个。
+     *
+     * 现在三级判定，任一成立就算在前台：
+     *   ① 无障碍能拿到微信窗口（最直接）
+     *   ② 最近的窗口变化事件来自微信包名（getWindows 里能看到微信窗口也算）
+     *   ③ 活动窗口包名兜底
+     */
     public boolean isWeChatForeground() {
-        return wechatWindowRoot() != null;
+        if (wechatWindowRoot() != null) return true;
+        try {
+            List<AccessibilityWindowInfo> wins = getWindows();
+            if (wins != null) {
+                for (AccessibilityWindowInfo w : wins) {
+                    if (w == null) continue;
+                    AccessibilityNodeInfo r = w.getRoot();
+                    if (r == null) continue;
+                    CharSequence pkg = r.getPackageName();
+                    if (pkg != null && WECHAT_PKG.equals(pkg.toString())) return true;
+                }
+            }
+        } catch (Exception ignore) {}
+        try {
+            AccessibilityNodeInfo a = getRootInActiveWindow();
+            if (a != null) {
+                CharSequence pkg = a.getPackageName();
+                if (pkg != null && WECHAT_PKG.equals(pkg.toString())) return true;
+            }
+        } catch (Exception ignore) {}
+        return false;
+    }
+
+    /** 对外暴露的"在屏幕某点按一下"（用于点通知横幅等） */
+    public boolean tapAt(float x, float y) {
+        return tapScreen(x, y);
     }
 
     private boolean tapScreen(float x, float y) {

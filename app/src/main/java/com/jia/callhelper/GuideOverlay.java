@@ -40,8 +40,22 @@ import android.widget.TextView;
  */
 public final class GuideOverlay {
 
-    /** 设置里的开关：来电时是否在屏幕上圈出接听按钮 */
+    /** 设置里的开关：来电时是否显示屏幕指引浮层（绿圈 + 顶部提示 + 停止提醒按钮） */
     public static final String PREF_KEY = "guide_overlay";
+    /**
+     * 【v1.18】细分开关：是否画那个绿色圆圈。
+     *
+     * 用户要求："新增一个功能，是否开启绿圈提示，如果用户不需要，就不要展示提示"。
+     * 之所以要和上面那个总开关分开，是因为绿圈有**副作用**：
+     * 它浮在微信界面之上，会干扰"当前活动窗口是不是微信"的判断，
+     * 也可能让无障碍读到的界面更乱。有些用户（或某些机型）改成"只播报语音、
+     * 完全不显示任何浮层"反而更稳。所以给一个独立的、能彻底关掉绿圈的开关。
+     */
+    public static final String PREF_RING_KEY = "guide_ring";
+    /** 是否连顶部那条文字提示也一起关掉（只保留语音播报） */
+    public static final String PREF_TIP_KEY = "guide_tip";
+    /** 是否显示「停止提醒」按钮（有些用户嫌它挡事） */
+    public static final String PREF_STOPBAR_KEY = "guide_stopbar";
 
     private static WindowManager sWm;
     private static View sLayer;   // 指示层（不接收触摸）
@@ -62,6 +76,38 @@ public final class GuideOverlay {
 
     public static void setEnabled(Context ctx, boolean on) {
         WhiteListManager.prefs(ctx).edit().putBoolean(PREF_KEY, on).apply();
+    }
+
+    /** 【v1.18】是否画绿色圆圈（默认开） */
+    public static boolean isRingEnabled(Context ctx) {
+        return WhiteListManager.prefs(ctx).getBoolean(PREF_RING_KEY, true);
+    }
+
+    public static void setRingEnabled(Context ctx, boolean on) {
+        WhiteListManager.prefs(ctx).edit().putBoolean(PREF_RING_KEY, on).apply();
+    }
+
+    /** 是否显示顶部文字提示（默认开） */
+    public static boolean isTipEnabled(Context ctx) {
+        return WhiteListManager.prefs(ctx).getBoolean(PREF_TIP_KEY, true);
+    }
+
+    public static void setTipEnabled(Context ctx, boolean on) {
+        WhiteListManager.prefs(ctx).edit().putBoolean(PREF_TIP_KEY, on).apply();
+    }
+
+    /** 是否显示「停止提醒」按钮（默认开） */
+    public static boolean isStopBarEnabled(Context ctx) {
+        return WhiteListManager.prefs(ctx).getBoolean(PREF_STOPBAR_KEY, true);
+    }
+
+    public static void setStopBarEnabled(Context ctx, boolean on) {
+        WhiteListManager.prefs(ctx).edit().putBoolean(PREF_STOPBAR_KEY, on).apply();
+    }
+
+    /** 是否"只剩语音播报"（浮层三个部分全关）—— 此时完全不创建任何悬浮窗 */
+    public static boolean isVoiceOnly(Context ctx) {
+        return !isTipEnabled(ctx) && !isRingEnabled(ctx) && !isStopBarEnabled(ctx);
     }
 
     /** 是否有「显示在其他应用上层」权限 */
@@ -104,6 +150,12 @@ public final class GuideOverlay {
             CallDiag.log("指引", "正在校准接听键位置 → 本次不显示来电指引（避免两套圈重叠）");
             return;
         }
+        // 【v1.18】用户选择了"只要语音、不要任何浮层" → 一个窗口都不创建。
+        // 这样连悬浮窗权限都不需要，也彻底排除浮层对界面识别的干扰。
+        if (isVoiceOnly(app) && !forceRing) {
+            CallDiag.log("指引", "已关闭全部屏幕提示（绿圈/提示/停止按钮）→ 本次只播报语音，不显示任何浮层");
+            return;
+        }
         if (!canOverlay(app)) {
             CallDiag.log("指引", "没有「显示在其他应用上层」权限，本次不显示屏幕指引");
             return;
@@ -127,10 +179,16 @@ public final class GuideOverlay {
 
             int[] p = CallHelperAccessibilityService.answerPoint(app);
 
+            // 【v1.18】三个细分开关：绿圈 / 顶部文字提示 / 停止提醒按钮
+            boolean drawRing = isRingEnabled(app) || forceRing;
+            boolean drawTip = isTipEnabled(app) || forceRing;
+            boolean drawStopBar = isStopBarEnabled(app) || forceRing;
+
             // ① 指示层：整层不接收触摸，事件穿透到微信
             GuideLayerView layerView = new GuideLayerView(
-                    app, p[0], p[1], p[2], caller, autoAnswer, fullScreen);
+                    app, p[0], p[1], p[2], caller, autoAnswer, fullScreen && drawRing);
             layerView.setAutoDeadline(autoDeadlineAt);
+            layerView.setTipVisible(drawTip);
             View layer = layerView;
             WindowManager.LayoutParams lp1 = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
@@ -144,9 +202,17 @@ public final class GuideOverlay {
             lp1.gravity = Gravity.TOP | Gravity.LEFT;
             sWm.addView(layer, lp1);
             sLayer = layer;
-            sRingShown = fullScreen;
+            sRingShown = fullScreen && drawRing;
 
             // ② 停止按钮：能让老人/家人随时把声音关掉，不再有"关不掉"的情况
+            if (!drawStopBar) {
+                sStopBar = null;
+                sShowing = true;
+                sToken = new Object();
+                CallDiag.log("指引", "已按设置显示指引（不显示「停止提醒」按钮）"
+                        + " 画圈=" + (fullScreen && drawRing) + " 提示文字=" + drawTip);
+                return;
+            }
             sStopBar = buildStopBar(app);
             WindowManager.LayoutParams lp2 = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT,
@@ -162,9 +228,11 @@ public final class GuideOverlay {
 
             sShowing = true;
             sToken = new Object();
-            CallDiag.log("指引", (fullScreen
+            CallDiag.log("指引", (fullScreen && drawRing
                     ? "已在屏幕上圈出接听键：中心=(" + p[0] + "," + p[1] + ") 半径=" + p[2]
-                    : "已显示来电提示（当前不是全屏界面，未画圆圈）")
+                    : (!drawRing ? "已显示来电提示（设置里关掉了绿圈，本次不画圆圈）"
+                                 : "已显示来电提示（当前不是全屏界面，未画圆圈）"))
+                    + " 提示文字=" + drawTip
                     + " 自动接听=" + autoAnswer);
         } catch (Throwable t) {
             CallDiag.log("指引", "显示屏幕指引失败：" + t);
@@ -271,6 +339,8 @@ public final class GuideOverlay {
         private final float mDensity;
         /** 自动接听截止时刻（毫秒时间戳，0 = 没有自动接听）。用于在提示里画倒计时 */
         private long mAutoDeadlineAt = 0L;
+        /** 【v1.18】是否画顶部文字提示（可在设置里单独关掉） */
+        private boolean mTipVisible = true;
 
         GuideLayerView(Context c, int cx, int cy, int r, String caller, boolean auto,
                        boolean fullScreen) {
@@ -358,6 +428,10 @@ public final class GuideOverlay {
             // 画圈时提示跟着圆圈居中；只提示时（屏幕上还没有接听键）居中在屏幕顶部。
             // 【v1.12】字号放大后改成「最多两行」绘制：第一行"谁打来的"，
             // 第二行"该怎么做"。字大 + 分行，远看也清楚。
+            if (!mTipVisible) {
+                if (isAttachedToWindow()) postInvalidateDelayed(40L);
+                return;
+            }
             float anchorX = mFullScreen ? mCx : getWidth() / 2f;
             String line1 = tipLine1();
             String line2 = tipLine2();
@@ -417,6 +491,11 @@ public final class GuideOverlay {
         /** 自动接听截止时刻（0 = 没有自动接听）。由外部设置，用于画倒计时 */
         void setAutoDeadline(long at) {
             mAutoDeadlineAt = at;
+        }
+
+        /** 【v1.18】是否画顶部文字提示（设置里可单独关掉） */
+        void setTipVisible(boolean v) {
+            mTipVisible = v;
         }
     }
 

@@ -29,17 +29,42 @@ public final class AnswerPointPrefs {
     public static final String KEY_RADIUS = "answer_radius_ratio";
     /** 用户是否自己校准过（false = 用内置默认值） */
     public static final String KEY_CUSTOM = "answer_point_custom";
+    /**
+     * 校准值的"代次"。
+     *
+     * 【v1.18 为什么要它】默认值改进后（例如把半径从 8.85% 调到 10.25%），
+     * 老用户机器上存的还是**上一代**的校准值，会继续用旧值，改动对他完全无效。
+     * 记录一个代次号，代次不一致就丢弃旧校准、改用新的默认值。
+     * 这样"我改进了默认位置"能真正落到已有用户身上，而不是只对新装的人有效。
+     */
+    public static final String KEY_GEN = "answer_point_gen";
+    private static final int CURRENT_GEN = 2;
 
-    // 默认值来自真机实测：1220×2712 截图里接听键中心 (980, 2403)、半径 108px
-    public static final float DEF_X = 0.803f;
+    /*
+     * 默认值来自两轮真机实测（1220×2712 截图，微信 8.0.78）：
+     *   第一轮（横向用图片数按钮，纵向目测）：中心 (980, 2403)，半径 108px
+     *   第二轮（v1.18，用按钮中心的白色电话图标定位，最可靠）：
+     *     白色电话图标中心 = (978, 2403)  ← 图标必然在圆心
+     *     实心绿按钮横向 844~1115       → 中心 x=979.5、直径 271 → 半径 135
+     *   两轮结论一致：横向 80.2%、距底部 11.4%、半径约 10.3%（半径按 125px 取值，
+     *   略小于实测直径的一半，这样圈会**套在按钮里侧**而不是把整个按钮连外圈一起框住）。
+     */
+    public static final float DEF_X = 0.802f;
     public static final float DEF_BOTTOM = 0.114f;
-    public static final float DEF_RADIUS = 0.0885f;
+    public static final float DEF_RADIUS = 0.1025f;
 
     private AnswerPointPrefs() {}
 
-    /** 用户是否自己调过位置 */
+    /** 用户是否自己调过位置（旧代次的校准值不算，见 KEY_GEN） */
     public static boolean isCustomized(Context ctx) {
-        return WhiteListManager.prefs(ctx).getBoolean(KEY_CUSTOM, false);
+        android.content.SharedPreferences p = WhiteListManager.prefs(ctx);
+        if (!p.getBoolean(KEY_CUSTOM, false)) return false;
+        if (p.getInt(KEY_GEN, 0) != CURRENT_GEN) {
+            // 上一代校准值：默认位置已经改进过，直接沿用新的默认值
+            p.edit().putBoolean(KEY_CUSTOM, false).putInt(KEY_GEN, CURRENT_GEN).apply();
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -80,6 +105,7 @@ public final class AnswerPointPrefs {
                 .putFloat(KEY_BOTTOM, bottomRatio)
                 .putFloat(KEY_RADIUS, radiusRatio)
                 .putBoolean(KEY_CUSTOM, true)
+                .putInt(KEY_GEN, CURRENT_GEN)
                 .apply();
     }
 
@@ -90,6 +116,7 @@ public final class AnswerPointPrefs {
                 .putFloat(KEY_BOTTOM, DEF_BOTTOM)
                 .putFloat(KEY_RADIUS, DEF_RADIUS)
                 .putBoolean(KEY_CUSTOM, false)
+                .putInt(KEY_GEN, CURRENT_GEN)
                 .apply();
     }
 
