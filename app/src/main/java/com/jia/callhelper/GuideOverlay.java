@@ -236,6 +236,20 @@ public final class GuideOverlay {
                     + " 自动接听=" + autoAnswer);
         } catch (Throwable t) {
             CallDiag.log("指引", "显示屏幕指引失败：" + t);
+            // 【v1.20 修复】抛异常时，很可能已经有视图 addView 成功
+            // （典型：指示层加好了，轮到加「停止提醒」按钮时崩了）。
+            // 旧实现只把静态引用置空就返回 —— 那个已经挂上 WindowManager 的
+            // 全屏浮层从此再也拿不到句柄：
+            //   ① 它一直盖在微信上面，干扰"微信是否在前台"的界面识别；
+            //   ② 它的 onDraw 以 25fps 空转到进程结束，白耗电量；
+            //   ③ 下次 show() 又会 addView 一层，层层叠上去。
+            // 所以必须先把视图真正摘下来，再去清引用。
+            try {
+                if (sLayer != null && sWm != null) sWm.removeViewImmediate(sLayer);
+            } catch (Throwable ignore) {}
+            try {
+                if (sStopBar != null && sWm != null) sWm.removeViewImmediate(sStopBar);
+            } catch (Throwable ignore) {}
             sShowing = false;
             sRingShown = false;
             sLayer = null;

@@ -84,6 +84,10 @@ public class CallSessionManager {
         public volatile boolean stoppedByUser = false;
         public volatile boolean wechatUiSeen = false; // 是否读到过微信来电界面（判断"界面消失"的前提）
         public volatile boolean fullScreenSeen = false; // 是否出现过"全屏来电界面"（决定指引画圈还是只提示）
+        /** 【v1.20】本次会话是否已经把指引升级成"圈出接听键"（只用来避免重复打同一条日志） */
+        public volatile boolean ringGuided = false;
+        /** 【v1.20】"证据不足却要判结束"的宽限次数（见 allowEndOnWeakEvidence） */
+        public volatile int weakEvidenceTicks = 0;
         public volatile int goneTicks = 0;   // 连续几次没看到微信来电界面
         public volatile int modeTicks = 0;   // 连续几次检测到系统音频处于通话状态
         /** 连续几次确认"通知消失"（见 sNotifyGoneConfirm：只用来记日志/调试） */
@@ -118,8 +122,20 @@ public class CallSessionManager {
     /** 给语音引擎的等待窗口：8 × 500ms = 4 秒，确认不可用才改响铃 */
     private static final long TTS_WAIT_STEP_MS = 500L;
     private static final int TTS_WAIT_STEPS = 8;
-    /** 提醒最长时长：再久对方也早挂了，不能一直吵着老人 */
-    private static final long HARD_TIMEOUT_MS = 90_000L;
+    /**
+     * 提醒最长时长。
+     *
+     * 【v1.20 调整：90 秒 → 120 秒】这里管的是"会话生命周期"，不是"吵多久"——
+     * 吵多久由 MAX_ANNOUNCE（最多 30 次播报）控制，接通又会立刻停止一切声音。
+     * 而 90 秒装不下完整的接听重试：
+     *   开场延时（用户配的 N 秒）+ 8 轮 ×（间隔 1.5s + 内层确认 2.5s）≈ 32 秒
+     *   失败后再重试 4 次，每次间隔 4 秒 → 又是 100 秒往上
+     * 也就是说旧值会在"还没跑完一半重试"时就把会话直接 markEnded，
+     * 表现就是用户在日志里看到的「没有更多尝试记录，来电不了了之」。
+     * 微信自己的未接挂断通常在 40~60 秒，120 秒足够覆盖整通电话的全过程，
+     * 又不会让会话永久挂着（真漏结的情况还有 Prolonged alive leak 兜底）。
+     */
+    private static final long HARD_TIMEOUT_MS = 120_000L;
     private static final int MAX_ANNOUNCE = 30;
 
     /** 自动接听重试次数与间隔：微信界面常比通知晚几百毫秒出现，需要重试 */
@@ -170,10 +186,31 @@ public class CallSessionManager {
         // 同一个人的重复通知（微信会刷新来电通知）直接忽略。
         // 注意这里不排除 handled 的会话：自动接听的点击重试正在进行时，
         // 若因一条刷新通知就重开会话，会把接听流程打断甚至重复点击。
-        if (old != null && !old.ended && old.caller != null
-                && old.caller.equals(caller)
-                && System.currentTimeMillis() - old.startAt < 15_000L) {
-            return;
+        //
+        // 【v1.20 关键修复】原来直接用 old.caller.equals(caller) 比字符串。
+        // 微信在不同通道给出的名字并不总是一模一样（有的带零宽字符、有的前后带空格、
+        // 有的全角半角混用），只要有一个字符不同就会走到下面 cleanup() 重建会话。
+        // 重建的代价是**致命的**：
+        //   sPullAttempt 归零、retryCount 归零、autoAnswerAt 重新算一次完整延时，
+        //   sAutoRun 也被重新排到 N 秒之后。微信在响铃期间会不断刷新通知，
+        //   于是倒计时被反复清零 —— 表现正是用户反馈的
+        //   「有时候能自动接听，有时候死活不接」。
+        // 现在：① 用归一化后的名字比较（容忍零宽/空格/全角）；
+        //       ② 自动接听已经到点启动时，窗口内一律不重建，哪怕名字确实不同。
+        if (old != null && !old.ended && old.caller != null) {
+            boolean withinWindow = System.currentTimeMillis() - old.startAt < 15_000L;
+            boolean sameCaller = WhiteListManager.normalize(old.caller)
+                    .equals(WhiteListManager.normalize(caller));
+            if (sameCaller && withinWindow) {
+                return;
+            }
+            if (withinWindow && old.autoAnswer
+                    && System.currentTimeMillis() >= old.autoAnswerAt) {
+                CallDiag.log("来电", "收到重复的来电判定，但当前会话的自动接听已经在进行中"
+                        + " → 保持会话不动（重建会把倒计时清零，等于取消这次自动接听）。"
+                        + " 原显示名=[" + old.caller + "] 本次=[" + caller + "]");
+                return;
+            }
         }
         cleanup(app);
 
@@ -339,9 +376,18 @@ public class CallSessionManager {
             return;
         }
         s.handled = true;
-        // 自动点击期间收起屏幕指引：此时不需要老人动手，
-        // 而且浮层可能干扰"当前前台是不是微信"的判断
-        GuideOverlay.hide();
+        // 【v1.20 修复】这里原来会 GuideOverlay.hide()，把屏幕指引收起来。
+        // 但 sWatchdog 每 1.5 秒检查一次，发现"全屏来电界面还在、圈不见了"就立刻画回去
+        // ——于是浮层 fade-out / fade-in 反复闪烁，白白 Doing 两次 addView，
+        // 而且每次重建的中间那一瞬间，无障碍的窗口判定会被搞乱
+        // （正是 v1.18 辛苦修掉的"微信不在前台"假象）。
+        //
+        // 更关键的是这一收一放违背了 v1.14 就定下的原则：
+        // **自动接听进行中也必须画圈**，因为自动化随时可能失败，
+        // 圈是老人最后能自己点到接听键的唯一依靠。
+        // 既然马上要画回来，就不该先收掉。
+        // 浮层是 FLAG_NOT_TOUCHABLE，事件穿透到微信；我们用的又是真实手势点击，
+        // 浮层既不影响点击，也不影响无障碍读屏，留着是安全的。
         sPullAttempt = 0;
         // 记一次"开始自动接听"的现场：这个时候最容易看出环境对不对
         CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
@@ -471,7 +517,7 @@ public class CallSessionManager {
                     @Override
                     public void onResult(boolean clicked) {
                         Session cur = sSession;
-                        if (cur == null || cur.ended) return;
+                        if (cur == null || cur.ended || cur.answered) return;
                         // 只有"当前这一轮"的回调才算数：看门狗已经代跑过一轮时，
                         // 迟到的旧回调不能再驱动流程，否则会重复推进轮次。
                         if (attemptAtStart != sPullAttempt) return;
@@ -479,6 +525,15 @@ public class CallSessionManager {
                         sHandler.removeCallbacks(sClickWatchdog);
                         if (clicked) {
                             CallDiag.log("接听", "接听流程结束：已接上");
+                            // 【v1.20 关键修复】以前这里只打一行日志就 return，
+                            // 把"已经接通"这件事丢给后面的轮询去发现。
+                            // 可微信 8.0.x 的通话界面是整页自绘的：节点为零、
+                            // 音频模式也不一定切换、通知还可能照旧挂着，
+                            // 于是那些轮询常常发现不了"已接通" ——
+                            // 表现就是：**明明已经接上了，还在让老人自己点，
+                            // 一直播报到 90 秒硬超时为止**。
+                            // 内层既然明确汇报了成功，这里就必须直接推进状态机。
+                            markAnswered("内层点击链确认已接通", sApp);
                             return;
                         }
                         // 这一轮没点上：界面可能还没铺开，继续下一轮
@@ -704,7 +759,11 @@ public class CallSessionManager {
                         + (s.autoAnswer ? "（自动接听流程不受影响）" : ""));
                 return;
             }
-            // 界面也不再响铃：确实结束了
+            // 界面也不再响铃：可能确实结束了。
+            // 【v1.20】但"读不到"和"真的挂了"在自绘界面上长得一模一样，
+            // 一定要先过 allowEndOnWeakEvidence 这道闸，
+            // 否则会在点击链跑到一半时把整个会话掐掉（详见该方法的说明）。
+            if (!allowEndOnWeakEvidence(s)) return;
             markEnded("微信来电通知与界面均已消失（挂断/已取消）", sApp);
         }
     };
@@ -813,8 +872,21 @@ public class CallSessionManager {
             // 现在改为：只要确认是全屏来电界面就画圈——**自动点击期间也画**，
             // 这样即使自动化失灵，老人顺手就能点到那个绿圈，不会错过电话。
             if (svc != null && svc.isFullScreenCallUi()) {
-                if (!s.fullScreenSeen) {
-                    s.fullScreenSeen = true;
+                s.fullScreenSeen = true;
+                // 【v1.20 修复】这里以前不看用户在设置里开的三个指引开关，
+                // 只要发现全屏来电页就把浮层画回去。三个开关全关（纯语音模式）时：
+                //   ① 违背用户勾选的意愿；
+                //   ② 每 1.5 秒刷一条"指引圈不见了 → 重新画上"的日志（用户日志里成片出现）；
+                //   ③ 浮层浮在微信上面，会干扰"微信是否在前台"的判定
+                //      ——那是 v1.18 刚修好的老毛病，等于又被这一行请回来。
+                // 所以：用户不要浮层时，这里安静地什么都不做。
+                boolean guideWanted = sApp != null
+                        && !GuideOverlay.isVoiceOnly(sApp)
+                        && GuideOverlay.canOverlay(sApp);
+                if (!guideWanted) {
+                    // 安静跳过，不刷日志
+                } else if (!s.ringGuided) {
+                    s.ringGuided = true;
                     CallDiag.log("提醒", "界面已变为全屏来电界面 → 把屏幕指引升级为「圈出接听键」"
                             + (s.handled ? "（自动接听进行中，仍然画圈以便手动兜底）" : ""));
                     if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer,
@@ -847,8 +919,12 @@ public class CallSessionManager {
             if (svc != null && s.wechatUiSeen && !ringing) {
                 s.goneTicks++;
                 if (s.goneTicks >= 3) {
-                    markEnded("微信来电界面已消失（对方挂断或已接听）", sApp);
-                    return;
+                    if (!allowEndOnWeakEvidence(s)) {
+                        s.goneTicks = 0;
+                    } else {
+                        markEnded("微信来电界面已消失（对方挂断或已接听）", sApp);
+                        return;
+                    }
                 }
             }
 
@@ -856,10 +932,42 @@ public class CallSessionManager {
         }
     };
 
+    /**
+     * 【v1.20】能不能凭"界面/通知不见了"就判这通来电已经结束。
+     *
+     * 微信 8.0.x 的通话页是**整页自绘**的：无障碍常常连续好几秒一个节点都读不到，
+     * 于是 isRinging()=false、isInCall()=false —— 看起来和"对方已经挂断"一模一样，
+     * 可电话很可能还在好好地响着。
+     * 一旦据此 markEnded()，{@link #cleanup} 会把 sAutoRun、sEnsureFullScreen
+     * 以及 WeChatClicker 里排队的点击全部一次性撤销，自动接听就此彻底泡汤。
+     * 用户反馈的「有时候能自动接、有时候怎么都不接」，这一条是贡献最大的原因之一：
+     * 能不能接上，取决于恰好在哪几秒里读得到界面 —— 完全随机。
+     *
+     * 规则很简单：**疑罪从无**。只要接听流程已经启动却还没接通，
+     * 就给一段宽限期（最多 6 次 × 约 2.5 秒 ≈ 15 秒）；期间反复"看起来结束了"
+     * 也一律不认，让点击链有机会跑完。宽限用尽仍拿不到任何"还在响铃/已接通"的
+     * 证据，才认输收场。真的挂断了，最多晚 15 秒停下，
+     * 换来的是不再有"莫名其妙不接听"——这个交易对老人场景是划算的。
+     */
+    private static final int MAX_UNCERTAIN_GRACE = 6;
+
+    private static boolean allowEndOnWeakEvidence(Session s) {
+        if (s == null || s.ended || s.answered) return false;
+        if (s.handled && s.weakEvidenceTicks < MAX_UNCERTAIN_GRACE) {
+            s.weakEvidenceTicks++;
+            CallDiag.log("会话", "界面/通知都读不到了，但自动接听流程仍在进行"
+                    + "（微信整页自绘时读不到是常态，不等于对方挂断）"
+                    + " → 第 " + s.weakEvidenceTicks + "/" + MAX_UNCERTAIN_GRACE
+                    + " 次宽限，不判结束");
+            return false;
+        }
+        return true;
+    }
+
     private static final Runnable sTimeout = new Runnable() {
         @Override
         public void run() {
-            markEnded("提醒已持续 90 秒", sApp);
+            markEnded("会话已达最长时长 " + (HARD_TIMEOUT_MS / 1000) + " 秒（铃早停了），收尾释放资源", sApp);
         }
     };
 

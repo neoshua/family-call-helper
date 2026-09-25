@@ -22,15 +22,18 @@ public final class WeChatClicker {
     }
 
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
-    private static Runnable sPending;
-    /** 一次来电里最多允许盲点一次（盲点无法确认点到了什么，重复盲点有误挂断风险） */
-    private static boolean sBlindUsed;
+    /** 已废弃：见下面的 sTasks（延时任务改成按标签记账，不再用单槽）。保留字段仅为注释引用 */
     /** 精确点击后等待多久去确认是否接通 */
     private static final long VERIFY_MS = 1200L;
     /** 盲点后等待多久去确认（盲点慢一点，微信界面切换需要时间） */
     private static final long VERIFY_BLIND_MS = 2500L;
     /** 一次来电里最多精确点击几次（界面状态可确认时才允许多点） */
     private static final int MAX_PRECISE_CLICKS = 3;
+
+    /** 延时任务的标签：确认 / 复核 / 下一轮重试，三者互不干扰 */
+    private static final String TAG_VERIFY = "verify";
+    private static final String TAG_RECHECK = "recheck";
+    private static final String TAG_NEXT = "next";
 
     private WeChatClicker() {}
 
@@ -44,35 +47,37 @@ public final class WeChatClicker {
      */
     public static void reset() {
         cancel();
-        sBlindUsed = false;
         sBlindUsedThisCall = false;
     }
 
     /**
-     * 【v1.13】"整通来电只准盲点一次"的闸门（与 sBlindUsed 的区别见下）。
+     * 【v1.13】"整通来电只准盲点一次"的闸门。
      *
-     * 背景：v1.13 起自动接听改成"每轮都尝试点击"（每 1.2 秒一轮，最多 8 轮），
-     * 而 answerWithRetry 每次进来都会 reset() 把 sBlindUsed 清零，
-     * 于是每一轮都允许盲点一次 —— 8 轮下来最多往屏幕右下角盲戳 8 次。
+     * 【v1.20】历史上这里同时存在 sBlindUsed 和 sBlindUsedThisCall 两个标志，
+     * 二者的清除时机完全一样（都只在 reset() 里），差别只有"谁来读"，
+     * 结果就是两处语义打架、谁也担不起全部责任，反而成了幽灵开关。
+     * 现在只保留这一个：它就是唯一的盲点配额。
+     *
+     * 背景：v1.13 起自动接听改成"每轮都尝试点击"（最多 8 轮），
+     * 若每轮都允许盲点一次，8 轮下来最多往屏幕右下角盲戳 8 次。
      * 盲点无法确认点中了什么，一旦中途已经接通，继续戳右下角就有碰到
      * 「挂断」的风险（挂断键就在同一行的左边一点点）。
      * 所以这里单独立一个**通电话期间不重置**的标志：
-     *   全部定位手段都失败时，只允许盲点一次；之后即使再重试，也只做精确点击，
-     *   不再往坐标上戳。
+     *   全部定位手段都失败时，只允许盲点一次；之后即使再重试，也不再往坐标上戳。
      *
      * 关键：要让这个闸门真的起作用，answerWithRetry 不能调用 reset()
-     * （reset 会把它和 sBlindUsed 一起清零）。answerWithRetry 现在只 cancel()
-     * 掉还在排队中的回拨，盲点标志只在「一通新来电开始」时由 reset() 清一次——
+     * （reset 会把它清零）。answerWithRetry 现在只 cancel() 掉还在排队中的回拨，
+     * 盲点标志只在「一通新来电开始」时由 reset() 清一次——
      * 这就是本文件 answerWithRetry 里用 cancel() 而非 reset() 的原因。
      */
     private static boolean sBlindUsedThisCall;
 
     /** 取消还在排队中的点击重试（例如对方已经挂断） */
     public static void cancel() {
-        if (sPending != null) {
-            sHandler.removeCallbacks(sPending);
-            sPending = null;
+        for (Runnable r : sTasks.values()) {
+            if (r != null) sHandler.removeCallbacks(r);
         }
+        sTasks.clear();
     }
 
     /**
@@ -87,8 +92,33 @@ public final class WeChatClicker {
         // "整通来电只准盲点一次"的闸门会每轮被重置，等于形同虚设（最多盲戳 8 次）。
         // 我们只取消上一轮还在排队中的回拨，盲点标志只在 CallSessionManager.startCall
         // 调 reset() 时清一次，从而让闸门在一通来电内始终有效。
+        // 用 Once 包一层：无论内部多少个延时分支抢着汇报，对外只回调一次，
+        // 且结果一旦确定就把还在排队的重试/复核全部作废，避免"已经接上了还继续点"。
         cancel();
-        answerStep(1, attempts, intervalMs, callback);
+        answerStep(1, attempts, intervalMs, new Once(callback));
+    }
+
+    /**
+     * 回调一次性包装。
+     * 盲点分支里有两个延时会分别尝试汇报（2.5s 确认、5.5s 复核），精确点击分支里
+     * 还有递归重试 —— 若不加这道闸，上层可能在一个接听流程里被回调好几次，
+     * 状态机会被反复推进（这一个 Augeas bug 家族）。
+     */
+    private static final class Once implements Callback {
+        final Callback real;
+        boolean fired;
+
+        Once(Callback real) {
+            this.real = real;
+        }
+
+        @Override
+        public synchronized void onResult(boolean clicked) {
+            if (fired) return;
+            fired = true;
+            cancel(); // 胜负已定，剩下的排队任务全部作废
+            if (real != null) real.onResult(clicked);
+        }
     }
 
     private static void answerStep(final int n, final int attempts, final long intervalMs,
@@ -105,14 +135,14 @@ public final class WeChatClicker {
             return;
         }
 
-        int r = svc.answerCall(!sBlindUsed && !sBlindUsedThisCall);
+        // 整通来电只允许一次坐标盲点：第一次放行，之后一律要求精确定位。
+        int r = svc.answerCall(!sBlindUsedThisCall);
         CallDiag.log("接听", "第 " + n + "/" + attempts + " 次尝试，结果=" + nameOf(r));
 
         if (r == CallHelperAccessibilityService.RESULT_CLICKED_BLIND) {
-            sBlindUsed = true;
             sBlindUsedThisCall = true;
             // 盲点无法确认点中了什么：只等结果，不再重复点
-            post(new Runnable() {
+            post(TAG_VERIFY, new Runnable() {
                 @Override
                 public void run() {
                     boolean inCall = svc.isInCall();
@@ -145,7 +175,7 @@ public final class WeChatClicker {
             }, VERIFY_BLIND_MS);
             // 【v1.13】盲点后不确定时，再补一次延时复核：微信从"响铃"切到"通话中"
             // 有时要 2 秒以上，只测一次容易误判成失败，导致上层又白点一轮。
-            post(new Runnable() {
+            post(TAG_RECHECK, new Runnable() {
                 @Override
                 public void run() {
                     if (svc.isInCall()) {
@@ -158,7 +188,7 @@ public final class WeChatClicker {
         }
 
         if (r == CallHelperAccessibilityService.RESULT_CLICKED_PRECISE) {
-            post(new Runnable() {
+            post(TAG_VERIFY, new Runnable() {
                 @Override
                 public void run() {
                     if (svc.isInCall()) {
@@ -191,7 +221,7 @@ public final class WeChatClicker {
             if (callback != null) callback.onResult(false);
             return;
         }
-        post(new Runnable() {
+        post(TAG_NEXT, new Runnable() {
             @Override
             public void run() {
                 answerStep(n + 1, attempts, intervalMs, callback);
@@ -199,10 +229,29 @@ public final class WeChatClicker {
         }, intervalMs);
     }
 
-    private static void post(Runnable r, long delayMs) {
-        cancel();
-        sPending = r;
+    // 【v1.20 重大修复】延时任务改成"按标签记账"，不再互相顶掉。
+    //
+    // 旧实现是全局单槽 sPending：每 post 一个新任务就 cancel() 掉上一个。
+    // 而盲点分支连续排了两个任务（2.5s 确认 + 5.5s 复核），
+    // 第二个 post 直接把第一个 removeCallbacks 掉了 —— 于是：
+    //   · 盲点确认回调**永远不会执行**（日志里"坐标盲点后确认"从未出现过，可交叉验证）
+    //   · CallSessionManager 的 sClickCallbackFired 永远为 false
+    //   · 11 秒的 sClickWatchdog 每一轮必然超时代跑
+    //   · 结果：每一轮点击白等 11 秒，8 轮下来远超 90 秒硬超时，
+    //     整通电话实际只跑得完 1~2 轮 —— 这正是"有时接得上、有时接不上"的机理。
+    // 现在用 Map 按任务名分别记账，谁也不顶谁。
+    private static final java.util.HashMap<String, Runnable> sTasks =
+            new java.util.HashMap<String, Runnable>();
+
+    private static void post(String tag, Runnable r, long delayMs) {
+        cancel(tag);
+        sTasks.put(tag, r);
         sHandler.postDelayed(r, delayMs);
+    }
+
+    private static void cancel(String tag) {
+        Runnable old = sTasks.remove(tag);
+        if (old != null) sHandler.removeCallbacks(old);
     }
 
     private static String nameOf(int r) {

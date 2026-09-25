@@ -356,8 +356,18 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         // 读到微信界面、不是通话中、也不是全屏来电页，但**有来电会话在进行**：
         // 很可能是"微信刚被拉起、页面还没铺开"的中间态。报 UI_RINGING 让上层继续尝试，
         // 比报 UI_NONE 让上层干等着强（这正是不肯点的另一种情形）。
+        //
+        // 【v1.20 收紧】上面那条放宽是有代价的：只要"有来电会话 + 微信在前台"，
+        // 哪怕微信此刻停在聊天列表，也会被报成"全屏来电界面"，上层就会往
+        // 右下角坐标戳——在聊天页上那是在别人的输入框/按钮上乱点。
+        // 所以补一条硬约束：只有在**读不到内容**（自绘通话页的典型样子）或
+        // **窗口确实铺满整屏**时，才允许按中间态处理。其余一律如实报 UI_NONE。
         if (CallSessionManager.isSessionActive() && isWeChatForeground()) {
-            return UI_RINGING;
+            if (!canReadUiText(w.root) || isWindowFullScreen(w)) {
+                return UI_RINGING;
+            }
+            CallDiag.log("无障碍", "微信在前台且确有来电会话，但当前是读得到内容的普通页面"
+                    + "（窗口也没铺满）→ 不算来电界面，先把它拉起来");
         }
         return UI_NONE;
     }
@@ -529,9 +539,20 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             // 点在那里是安全的。
             boolean weChatFront = isWeChatForeground();
             if (weChatFront) {
+                // 【v1.20 修复】原实现在这里无视 allowBlind 直接盲点。
+                // WeChatClicker 有"整通来电只准盲点一次"的闸门（sBlindUsedThisCall），
+                // 而这一支恰好是本机最常走的路（微信整页自绘、节点为零），
+                // 于是闸门形同虚设：每一轮都往同一个坐标戳，一旦中途接上了，
+                // 后续几下就有戳到左边挂断键的风险。现在必须先过闸门。
+                if (!allowBlind) {
+                    CallDiag.log("接听", "仍是整页自绘界面，但本通来电的坐标兜底已用过一次"
+                            + " → 这一轮不再戳坐标，避免误碰挂断键");
+                    return RESULT_NO_WINDOW;
+                }
                 CallDiag.log("接听", "拿不到微信节点（整页自绘），但微信确在前台"
                         + " → 按校准坐标执行一次手势点击（不再因为读不到节点就放弃）");
-                if (tapAnswerByRatio()) return RESULT_CLICKED_PRECISE;
+                // 走的是坐标 → 如实报 RESULT_CLICKED_BLIND，让上层计入盲点配额
+                if (tapAnswerByRatio()) return RESULT_CLICKED_BLIND;
                 CallDiag.log("接听", "手势点击下发失败");
                 return RESULT_NO_WINDOW;
             }
