@@ -406,6 +406,17 @@
             android:visibility="gone"/>
 
         <Button
+            android:id="@+id/btn_open_script"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="✏ 播报文字设置（改成老人听得懂的话）"
+            android:textColor="#FFFFFF"
+            android:textSize="19sp"/>
+
+        <Button
             android:id="@+id/btn_open_diag"
             android:layout_width="match_parent"
             android:layout_height="60dp"

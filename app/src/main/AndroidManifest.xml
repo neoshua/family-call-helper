@@ -66,6 +66,13 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden"/>
 
+        <!-- 播报文案自定义：用户可把每一句都改成老人听得懂的说法 -->
+        <activity android:name=".SpeakScriptActivity"
+            android:exported="false"
+            android:label="播报文字设置"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"/>
+
         <!--
             「停止提醒」按钮的落点：来电时老人/家人随时能把语音和铃声关掉。
             通知上有一个，屏幕浮层上也有一个，都走这里。

@@ -146,6 +146,14 @@ public class SettingsActivity extends Activity {
             }
         });
 
+        // 播报文字设置：所有语音内容都可以自己改（用户要求）
+        bind(R.id.btn_open_script, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(SettingsActivity.this, SpeakScriptActivity.class));
+            }
+        });
+
         // 媒体音量（语音播报走媒体通道）
         final AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
         int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);

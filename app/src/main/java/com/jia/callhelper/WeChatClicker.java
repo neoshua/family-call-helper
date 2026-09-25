@@ -38,11 +38,34 @@ public final class WeChatClicker {
         return CallHelperAccessibilityService.get() != null;
     }
 
-    /** 新的一次来电开始时调用：清掉上一轮的残留状态 */
+    /**
+     * 新的一次来电开始时调用：清掉上一轮的残留状态。
+     * 注意 sBlindUsedThisCall 也在这里重置 —— 它是"整通来电只准盲点一次"的闸门。
+     */
     public static void reset() {
         cancel();
         sBlindUsed = false;
+        sBlindUsedThisCall = false;
     }
+
+    /**
+     * 【v1.13】"整通来电只准盲点一次"的闸门（与 sBlindUsed 的区别见下）。
+     *
+     * 背景：v1.13 起自动接听改成"每轮都尝试点击"（每 1.2 秒一轮，最多 8 轮），
+     * 而 answerWithRetry 每次进来都会 reset() 把 sBlindUsed 清零，
+     * 于是每一轮都允许盲点一次 —— 8 轮下来最多往屏幕右下角盲戳 8 次。
+     * 盲点无法确认点中了什么，一旦中途已经接通，继续戳右下角就有碰到
+     * 「挂断」的风险（挂断键就在同一行的左边一点点）。
+     * 所以这里单独立一个**通电话期间不重置**的标志：
+     *   全部定位手段都失败时，只允许盲点一次；之后即使再重试，也只做精确点击，
+     *   不再往坐标上戳。
+     *
+     * 关键：要让这个闸门真的起作用，answerWithRetry 不能调用 reset()
+     * （reset 会把它和 sBlindUsed 一起清零）。answerWithRetry 现在只 cancel()
+     * 掉还在排队中的回拨，盲点标志只在「一通新来电开始」时由 reset() 清一次——
+     * 这就是本文件 answerWithRetry 里用 cancel() 而非 reset() 的原因。
+     */
+    private static boolean sBlindUsedThisCall;
 
     /** 取消还在排队中的点击重试（例如对方已经挂断） */
     public static void cancel() {
@@ -58,7 +81,13 @@ public final class WeChatClicker {
      */
     public static void answerWithRetry(final int attempts, final long intervalMs,
                                        final Callback callback) {
-        reset();
+        // 注意：这里用 cancel() 而不是 reset()。
+        // reset() 会把 sBlindUsed / sBlindUsedThisCall 也清零 —— 而 v1.13 的
+        // ensureFullScreenStep 每 1.2 秒就调一次 answerWithRetry，若在这里 reset，
+        // "整通来电只准盲点一次"的闸门会每轮被重置，等于形同虚设（最多盲戳 8 次）。
+        // 我们只取消上一轮还在排队中的回拨，盲点标志只在 CallSessionManager.startCall
+        // 调 reset() 时清一次，从而让闸门在一通来电内始终有效。
+        cancel();
         answerStep(1, attempts, intervalMs, callback);
     }
 
@@ -76,11 +105,12 @@ public final class WeChatClicker {
             return;
         }
 
-        int r = svc.answerCall(!sBlindUsed);
+        int r = svc.answerCall(!sBlindUsed && !sBlindUsedThisCall);
         CallDiag.log("接听", "第 " + n + "/" + attempts + " 次尝试，结果=" + nameOf(r));
 
         if (r == CallHelperAccessibilityService.RESULT_CLICKED_BLIND) {
             sBlindUsed = true;
+            sBlindUsedThisCall = true;
             // 盲点无法确认点中了什么：只等结果，不再重复点
             post(new Runnable() {
                 @Override
@@ -100,14 +130,30 @@ public final class WeChatClicker {
                         // 微信界面完全自绘、一个文字节点都没有：这里其实无法确认。
                         // 不能谎报「没接上」——万一真接通了却在通话里播报
                         // 「没接上，请自己点接听」，老人会更混乱。
-                        // 所以按「已尽力」处理，真实结果由微信界面本身呈现。
-                        ok = true;
-                        reason = "界面完全读不到内容，无法确认（已按坐标送出点击）";
+                        // 但也**不能一律当成成功**：v1.13 起自动接听会多轮重试，
+                        // 若这里直接"成功"返回，上层就不再重试了，
+                        // 万一是真的没点上（坐标偏了几十像素很常见），
+                        // 整通电话就白白错过 —— 那正是用户反馈的"一直没自动接听"。
+                        // 所以按"未确认"处理：交给上层再试一轮（第二次不会再盲点，
+                        // 只会走精确点击，见 sBlindUsedThisCall）。
+                        ok = false;
+                        reason = "界面完全读不到内容，无法确认（已按坐标送出点击，交由下一轮再试）";
                     }
                     CallDiag.log("接听", "坐标盲点后确认：" + reason + " → " + (ok ? "按成功处理" : "判定失败"));
                     if (callback != null) callback.onResult(ok);
                 }
             }, VERIFY_BLIND_MS);
+            // 【v1.13】盲点后不确定时，再补一次延时复核：微信从"响铃"切到"通话中"
+            // 有时要 2 秒以上，只测一次容易误判成失败，导致上层又白点一轮。
+            post(new Runnable() {
+                @Override
+                public void run() {
+                    if (svc.isInCall()) {
+                        CallDiag.log("接听", "盲点延时复核：已进入通话中");
+                        if (callback != null) callback.onResult(true);
+                    }
+                }
+            }, VERIFY_BLIND_MS + 3000L);
             return;
         }
 

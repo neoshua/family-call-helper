@@ -191,6 +191,21 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     }
 
     /**
+     * 下拉通知栏（无障碍全局动作）。
+     *
+     * 用途：来电时屏幕上只显示一条通知（用户图二那种情况），
+     * 下拉通知栏能让这条来电通知进入可交互状态，是"把微信通话页拉起来"的一条辅助路径。
+     * 成功后返回 true；系统不支持时返回 false（调用方会继续用其它办法）。
+     */
+    public boolean openNotificationShade() {
+        try {
+            return performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
      * 在所有窗口里找属于微信的那一个，并记下它的屏幕区域。
      *
      * 为什么不直接用 getRootInActiveWindow()：来电时我们会在屏幕最上层显示

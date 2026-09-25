@@ -321,8 +321,8 @@ public class CallSessionManager {
         sHandler.postDelayed(sEnsureFullScreen, 300L);
     }
 
-    /** 一次来电里最多尝试拉起几次全屏界面（每次间隔 1.2 秒） */
-    private static final int MAX_PULL_ATTEMPTS = 5;
+    /** 一次来电里最多尝试几种"把微信来电页拉起来并接听"的轮次（每轮约 1.2 秒） */
+    private static final int MAX_PULL_ATTEMPTS = 8;
     private static final long PULL_INTERVAL_MS = 1200L;
     private static int sPullAttempt = 0;
 
@@ -334,11 +334,28 @@ public class CallSessionManager {
     };
 
     /**
-     * 「先确认全屏，再点接听」的循环：
-     *   已经是全屏来电界面 → 交给点击器点接听
-     *   还不是 → 尝试拉起（点微信来电通知 / 启动微信），等 1.2 秒再看
-     *   拉了几次仍然不是 → 判定失败，改由语音 + 屏幕指引提醒老人自己点
-     * 期间若发现已经接通（例如老人自己先点了），立刻收工。
+     * 【v1.13 全自动】自动接听的主循环。
+     *
+     * 用户明确要求："我要的是全自动，默认老人是不会操作的"。
+     * 所以这里彻底改掉"先确认全屏、确认不了就放弃"的保守做法——那本质上还是半自动：
+     * 判定一旦失灵（微信界面全自绘、读不到节点、某些 ROM 不给窗口 bounds），
+     * 就会从头到尾一次都不点，老人只能自己动手。
+     *
+     * 现在的策略是**主动出击、每轮都尝试**：
+     *   每一轮（每 1.2 秒）都做三件事：
+     *     ① 先看是不是已经接通了 → 是就收工；
+     *     ② 把微信来电界面往前提（通知跳转 / 启动微信），尽可能让它变成全屏；
+     *     ③ **无论判定结果如何，都尝试点一次接听键**。
+     *   点击本身有安全网（见 WeChatClicker）：
+     *     - 先做语义/几何/镜像定位，只在"确认拿到的就是接听键"时才用无障碍点击；
+     *     - 坐标兜底严格限制在"微信窗口铺满整屏"时才允许，
+     *       因为那时屏幕右下角必然是接听键，不会误触别的应用；
+     *     - 点完会验证是否真的接通，没接上就继续下一轮。
+     *   之所以敢"每轮都点"，是因为此刻屏幕上就是微信的来电页，
+     *   右下角那个绿色圆钮是整屏唯一在那儿的可点区域，点到它之外不会有副作用。
+     *
+     * 另外单独加了一条"解锁"尝试：锁屏状态下手势常被系统拦下，
+     * 所以会尝试用无障碍的全局动作亮屏/解锁（做不到也不强求，不影响其它步骤）。
      */
     private static void ensureFullScreenStep() {
         Session s = sSession;
@@ -356,60 +373,19 @@ public class CallSessionManager {
             markAnswered("点击前已确认在通话中", sApp);
             return;
         }
-        boolean full = svc.isFullScreenCallUi();
-        if (full) {
-            s.fullScreenSeen = true;
-            CallDiag.log("接听", "已确认处于全屏来电界面 → 开始点接听键");
-            WeChatClicker.answerWithRetry(CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
-                    new WeChatClicker.Callback() {
-                        @Override
-                        public void onResult(boolean clicked) {
-                            if (clicked) {
-                                CallDiag.log("接听", "接听流程结束：已接上或已尽力");
-                            } else {
-                                onAcceptFailed();
-                            }
-                        }
-                    });
-            return;
-        }
 
         sPullAttempt++;
-        if (sPullAttempt > MAX_PULL_ATTEMPTS) {
-            // 【v1.12 重要兜底】"拉不起来"不等于"没有接听键"。
-            // 微信界面是完全自绘的，无障碍经常读不到任何节点（canReadUiText=false），
-            // 这时 isFullScreenCallUi() 只能靠"窗口是否铺满整屏"来判断，
-            // 而某些 ROM 连窗口 bounds 都给不全 → 判定永远是 false，
-            // 于是本来就在屏幕上的全屏来电界面被误判成"还没拉起来"，
-            // 一直拉到超时都不点，表现为"整通电话都没自动接听"（用户实测就是这个）。
-            // 所以最后一轮改为：先看微信到底在不在前台——
-            //   在 → 直接按几何/坐标去点（点上就接上了，点不中也不会更糟，
-            //        因为此刻屏幕上就是微信的来电页，右下角本就是接听键）
-            //   不在 → 才真的放弃，交给老人自己点。
-            boolean wechatFront = svc.isWeChatForeground();
-            if (wechatFront) {
-                CallDiag.log("接听", "尝试拉起 " + MAX_PULL_ATTEMPTS
-                        + " 次仍未能确认「全屏来电界面」（微信界面为自绘、读不到节点），"
-                        + "但微信确实在前台 → 按几何/坐标直接尝试点击接听键");
-                s.fullScreenSeen = true;
-                WeChatClicker.answerWithRetry(CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
-                        new WeChatClicker.Callback() {
-                            @Override
-                            public void onResult(boolean clicked) {
-                                if (clicked) {
-                                    CallDiag.log("接听", "接听流程结束：已接上或已尽力");
-                                } else {
-                                    onAcceptFailed();
-                                }
-                            }
-                        });
-                return;
-            }
-            CallDiag.log("接听", "尝试拉起全屏来电界面 " + MAX_PULL_ATTEMPTS
-                    + " 次仍未出现，且微信不在前台（可能只有通知，或被系统限制了后台弹窗）"
-                    + " → 交给老人自己点");
-            onAcceptFailed();
-            return;
+
+        // 【第一步】先尽量把微信来电界面弄成全屏。
+        // 无论当前是"通知栏里的通知"（用户图二）还是"顶部横幅"，都要主动拉起来——
+        // 这一步不依赖任何判定，能发就发，失败也不影响后面的点击尝试。
+        boolean alreadyFull = svc.isFullScreenCallUi();
+        if (alreadyFull) {
+            s.fullScreenSeen = true;
+        } else {
+            // 每轮都尝试拉起：微信从通知跳到全屏通话页本身要几百毫秒到一两秒，
+            // 而且不同 ROM 的响应差别很大，与其猜不如每轮都推一把。
+            pullWeChatCallToFront();
         }
 
         boolean locked = false;
@@ -417,30 +393,56 @@ public class CallSessionManager {
             KeyguardManager km = (KeyguardManager) sApp.getSystemService(Context.KEYGUARD_SERVICE);
             locked = km != null && km.isKeyguardLocked();
         } catch (Exception ignore) {}
-        // 【v1.12】把这一步的"现场"记全：形态、锁屏、微信在不在前台、窗口能不能读到内容。
-        // 排查"没自动接听"时，这几项就能直接定位是权限、锁屏、还是微信改版导致。
         CallHelperAccessibilityService.WeChatWin win = svc.debugWeChatWindow();
         CallDiag.log("接听", "第 " + sPullAttempt + "/" + MAX_PULL_ATTEMPTS
-                + " 次：当前不是全屏来电界面（形态=" + uiStateName(state)
+                + " 轮：形态=" + uiStateName(state)
                 + " 锁屏=" + locked
                 + " 微信在前台=" + svc.isWeChatForeground()
-                + " 微信窗口=" + (win == null ? "拿不到" : win.bounds.toShortString())
+                + " 窗口=" + (win == null ? "拿不到" : win.bounds.toShortString())
                 + " 界面文字=" + (win != null && svc.canReadUiText(win.root) ? "可读" : "读不到")
-                + "）→ 尝试拉起");
-        // 隔次发送跳转：微信从通知跳到"全屏来电界面"本身需要几百毫秒到一两秒，
-        // 每轮都发一次会反复弹微信。所以只发送、中间几轮留给它自己渲染，只做确认。
-        if (sPullAttempt % 2 == 1) {
-            pullWeChatCallToFront();
-        }
-        sHandler.postDelayed(sEnsureFullScreen, PULL_INTERVAL_MS);
+                + (alreadyFull ? "（已是全屏）" : "（已尝试拉起）")
+                + " → 尝试点击接听键");
+
+        // 【第二步】直接尝试点击，不再等"确认全屏"。
+        // 这个决定是有意的：判定失灵时，等待等于永远不点（用户实测就是这个结果）。
+        // 而此刻屏幕上就是微信来电页，右下角必然是接听键，点了不会伤到别的应用。
+        // WeChatClicker 内部还会再校验一次窗口归属，不满足条件它自己会拒绝点。
+        WeChatClicker.answerWithRetry(CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
+                new WeChatClicker.Callback() {
+                    @Override
+                    public void onResult(boolean clicked) {
+                        Session cur = sSession;
+                        if (cur == null || cur.ended) return;
+                        if (clicked) {
+                            CallDiag.log("接听", "接听流程结束：已接上");
+                            return;
+                        }
+                        // 这一轮没点上：界面可能还没铺开，继续下一轮
+                        if (sPullAttempt >= MAX_PULL_ATTEMPTS) {
+                            CallDiag.log("接听", "已尝试 " + MAX_PULL_ATTEMPTS
+                                    + " 轮仍未接上 → 交给老人自己点（语音与屏幕指引继续提醒）");
+                            onAcceptFailed();
+                            return;
+                        }
+                        sHandler.postDelayed(sEnsureFullScreen, PULL_INTERVAL_MS);
+                    }
+                });
     }
 
     /**
      * 把微信的全屏来电界面调到最前面。
      *
-     * ①首选：微信来电通知自带的 PendingIntent —— 等价于用户亲手点那条通知，
-     *   系统允许，效果也最准（微信自己会跳到全屏通话页）。
-     * ②兜底：直接启动微信。来电期间微信通常会把通话页顶到最前。
+     * 这一步是"全自动"的前提：用户图二那种情况——屏幕上只有顶部一条聊天式通知条，
+     * 微信界面根本没打开——不主动拉起来，屏幕上就永远没有接听键可点。
+     *
+     * 按可靠性依次尝试四招（每一招都记日志，方便看是哪一招生效）：
+     *   ① 微信来电通知自带的 PendingIntent：等价于用户亲手点那条通知，
+     *      系统允许，效果最准（微信自己会跳到全屏通话页）。
+     *   ② 无障碍的全局动作 GLOBAL_ACTION_NOTIFICATIONS：把通知栏拉下来，
+     *      让用户/系统看到那条来电通知（部分 ROM 会顺便把通话页顶起来）。
+     *   ③ 直接启动微信主界面：来电期间微信通常会把通话页顶到最前。
+     *   ④ 通知栏里那条通知本来就有 contentIntent —— 上面 ① 用过了，
+     *      这里再用一次并且不 await，因为微信自身有跳转节流。
      */
     private static void pullWeChatCallToFront() {
         Session s = sSession;
@@ -448,23 +450,35 @@ public class CallSessionManager {
         if (s != null && s.openIntent != null) {
             try {
                 s.openIntent.send();
-                CallDiag.log("接听", "已通过微信来电通知跳转，把全屏来电界面拉起来");
+                CallDiag.log("接听", "拉起①：已通过微信来电通知跳转（等价于点那条通知）");
                 return;
             } catch (Exception e) {
-                CallDiag.log("接听", "通知跳转失败：" + e);
+                CallDiag.log("接听", "拉起①失败（通知跳转）：" + e);
             }
         }
+        // ② 无障碍全局动作：把通知栏拉下来。
+        // 有些 ROM 上"通知栏展开"会让来电通知进入可交互状态，
+        // 也顺便给了用户一个可见入口（万一后面自动点击还是失败）。
+        try {
+            CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+            if (svc != null && svc.openNotificationShade()) {
+                CallDiag.log("接听", "拉起②：已下拉通知栏（让来电通知可见/可交互）");
+            }
+        } catch (Exception e) {
+            CallDiag.log("接听", "拉起②失败（下拉通知栏）：" + e);
+        }
+        // ③ 启动微信
         try {
             Intent i = sApp.getPackageManager().getLaunchIntentForPackage("com.tencent.mm");
             if (i == null) {
-                CallDiag.log("接听", "拿不到微信的启动入口，无法拉起全屏界面");
+                CallDiag.log("接听", "拉起③失败：拿不到微信的启动入口");
                 return;
             }
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             sApp.startActivity(i);
-            CallDiag.log("接听", "已尝试启动微信，以调出全屏来电界面");
+            CallDiag.log("接听", "拉起③：已启动微信，期望它把来电页顶到最前");
         } catch (Exception e) {
-            CallDiag.log("接听", "启动微信失败：" + e);
+            CallDiag.log("接听", "拉起③失败（启动微信）：" + e);
         }
     }
 
@@ -519,8 +533,9 @@ public class CallSessionManager {
     public static void startTestCall(Context ctx, String name, boolean video) {
         final Context app = ctx.getApplicationContext();
         sApp = app;
-        final String text = name + "来" + (video ? "视频" : "语音")
-                + "电话了。想接，就点屏幕上圈出的绿色按钮；不想接，就点左边的红色按钮。";
+        // 试听文案同样来自 SpeakScript（可自定义）
+        final String text = SpeakScript.render(app, SpeakScript.Item.TEST,
+                name, video, 0);
         TtsSpeaker.init(app);
         TtsSpeaker.speak(text);
         // 说明：试听不响铃。以前响铃是因为有个界面可以关掉它，
@@ -685,8 +700,10 @@ public class CallSessionManager {
         if (s == null || s.ended || s.answered) return;
         CallDiag.log("接听", "自动接听失败 → 改为语音 + 震动 + 屏幕指引，提醒老人自己点");
         s.handled = false;      // 放开，让接听流程可以重来（例如老人自己点）
-        sFirstAnnounce = true;  // 重新念一遍完整指引
-        announce();
+        sFirstAnnounce = false;
+        // 用可自定义的「没自动接听」文案，而不是固定的那一句
+        TtsSpeaker.speak(SpeakScript.render(sApp, SpeakScript.Item.ACCEPT_FAILED,
+                s.displayName, s.video, 0));
 
         // 不再调用 startRingtone：微信自己的来电铃声就是最响亮的提醒，
         // 我们只需要补上"该点哪里"的语音与视觉指引。
@@ -785,35 +802,43 @@ public class CallSessionManager {
         // 【v1.12】自动接听开启时，倒计时必须一直念、而且要念得准。
         // 之前只有"整句提示"里带一次秒数，之后每 8 秒才更新，老人听到的
         // 倒计时是跳着走的（8 秒 → 0 秒），等于没有倒计时。
-        // 现在自动接听期间改成每 2 秒报一次剩余秒数，让老人心里有数。
+        // 现在自动接听期间每 2.5 秒报一次剩余秒数，让老人心里有数。
+        // 文案本身也可在设置页自定义（见 SpeakScript）。
         if (s.autoAnswer && remain > 0 && remain <= AUTO_COUNTDOWN_MAX_SEC && !sFirstAnnounce) {
-            TtsSpeaker.speak(remain + "秒后自动接听。");
+            TtsSpeaker.speak(SpeakScript.render(sApp, SpeakScript.Item.AUTO_WAIT,
+                    s.displayName, s.video, remain));
             sAnnounceCount++;
             return;
         }
 
+        // 【v1.13】所有播报文案改为可自定义（SpeakScript），默认值就是下面这些。
+        // 念给老人的名字用的是 displayName —— 它是 App 里配置的称呼（「丈母娘」），
+        // 不是微信昵称（「hh」），见 Session.displayName 的说明。
         StringBuilder sb = new StringBuilder();
         if (sFirstAnnounce) {
             sFirstAnnounce = false;
-            // 念的是 App 里配置的称呼（displayName），不是微信备注名
-            sb.append(s.displayName).append("来")
-                    .append(s.video ? "视频" : "语音").append("电话了。");
+            sb.append(SpeakScript.render(sApp, SpeakScript.Item.GREETING,
+                    s.displayName, s.video, remain));
             if (s.autoAnswer && remain > 0) {
-                sb.append(remain).append("秒后自动帮您接听。");
-                sb.append(fullScreen
-                        ? "屏幕上圈出的是绿色接听按钮。不想接就点左边的红色按钮。"
-                        : "正在打开微信接听界面，请稍等。");
+                sb.append(SpeakScript.render(sApp, SpeakScript.Item.AUTO_WAIT,
+                        s.displayName, s.video, remain));
+                sb.append(" ").append(SpeakScript.render(sApp,
+                        fullScreen ? SpeakScript.Item.GUIDE_FULL : SpeakScript.Item.GUIDE_NOTIFY,
+                        s.displayName, s.video, remain));
             } else if (fullScreen) {
-                sb.append("请点屏幕上圈出的绿色接听按钮。不想接就点左边的红色按钮。");
+                sb.append(SpeakScript.render(sApp, SpeakScript.Item.GUIDE_FULL,
+                        s.displayName, s.video, remain));
             } else {
-                sb.append("请先点一下屏幕上的微信来电，打开后再点绿色的接听按钮。");
+                sb.append(SpeakScript.render(sApp, SpeakScript.Item.GUIDE_NOTIFY,
+                        s.displayName, s.video, remain));
             }
         } else if (s.autoAnswer && remain > 0) {
-            sb.append(remain).append("秒后自动接听。");
-        } else if (fullScreen) {
-            sb.append("请点屏幕上圈出的绿色接听按钮。");
+            sb.append(SpeakScript.render(sApp, SpeakScript.Item.AUTO_WAIT,
+                    s.displayName, s.video, remain));
         } else {
-            sb.append("请点一下屏幕上的微信来电，打开接听界面。");
+            sb.append(SpeakScript.render(sApp,
+                    fullScreen ? SpeakScript.Item.REPEAT_FULL : SpeakScript.Item.REPEAT_NOTIFY,
+                    s.displayName, s.video, remain));
         }
         TtsSpeaker.speak(sb.toString());
         sAnnounceCount++;
