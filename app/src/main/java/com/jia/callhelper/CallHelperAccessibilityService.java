@@ -479,17 +479,24 @@ public class CallHelperAccessibilityService extends AccessibilityService {
                     + " → 按几何/比例尝试点击接听键。窗口=" + win.bounds.toShortString());
         }
 
-        // 1) 语义
+        // 【v1.15】真正点击一律走「物理屏比例坐标 + 真实手势」。
+        // 原因（用户实机日志定位出的两个根因）：
+        //   · 微信 8.0.78 的接听键对无障碍 ACTION_CLICK 无响应——ACTION_CLICK 返回成功、
+        //     日志写"已点击(精确定位)"，呼叫却一直在响铃。只有真实手势点屏幕坐标才生效。
+        //   · 节点的 getBoundsInScreen() 在部分 ROM 下坐标空间失真（窗口曾出现
+        //     [987,136,2085,2576] 这种右边缘远超物理屏宽的情况），用节点中心去点会点到屏幕外。
+        // 因此：语义/几何/镜像只用来"确认这是来电接听界面 + 打日志"，
+        // 实际点击统一用 answerPointInternal 算出的物理比例坐标（已在本机截图验证准确）。
         AccessibilityNodeInfo node = findAnswerNode(root);
-        if (node != null && clickNode(node)) {
-            CallDiag.log("接听", "按文字/描述命中接听键并已点击");
-            return RESULT_CLICKED_PRECISE;
-        }
-
-        // 2) 几何：屏幕右下方那个可点击的圆形按钮
         AccessibilityNodeInfo geo = findAnswerByGeometry(root);
-        if (geo != null && clickNode(geo)) {
-            CallDiag.log("接听", "按右下角圆形按钮定位接听键并已点击（" + bounds(geo) + "）");
+        if (node != null) {
+            CallDiag.log("接听", "按文字/描述命中接听键，改用物理比例坐标点按（不再用 ACTION_CLICK）");
+        } else if (geo != null) {
+            CallDiag.log("接听", "按右下角圆形按钮定位接听键，改用物理比例坐标点按");
+        } else {
+            CallDiag.log("接听", "未直接认出接听键文字/按钮，仍按物理比例坐标点按（微信整页自绘时常用）");
+        }
+        if (tapAnswerByRatio()) {
             return RESULT_CLICKED_PRECISE;
         }
 
@@ -507,7 +514,7 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             return RESULT_NO_WINDOW;
         }
         boolean ok = tapAnswerByRatio();
-        CallDiag.log("接听", "文字与按钮都定位不到，改用坐标盲点 -> " + ok);
+        CallDiag.log("接听", "坐标兜底点按 -> " + ok);
         return ok ? RESULT_CLICKED_BLIND : RESULT_NO_WINDOW;
     }
 
@@ -674,45 +681,36 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
     private static int[] answerPointInternal(WeChatWin win, int[] size, int navBarHeight) {
         int w = size[0], h = size[1];
+        if (w <= 0 || h <= 0) return new int[]{0, 0, 0};
 
-        // ① 定基准区域
-        float baseLeft = 0f, baseTop = 0f, baseW = w, baseBottom = h;
-        String baseName;
-        if (win != null && win.bounds.width() > w * 0.5f
-                && win.bounds.height() > (h - navBarHeight) * 0.5f) {
-            baseLeft = win.bounds.left;
-            baseTop = win.bounds.top;
-            baseW = win.bounds.width();
-            baseBottom = win.bounds.bottom;
-            baseName = "微信窗口";
-        } else if (navBarHeight > 0) {
-            baseBottom = h - navBarHeight;
-            baseName = "屏幕减去导航栏(" + navBarHeight + "px)";
-        } else {
-            baseName = "整屏（未检测到导航栏）";
-        }
-        float baseH = baseBottom - baseTop;
+        // 【v1.15 核心修复：坐标必须落在物理屏幕上】
+        // 旧逻辑把"微信窗口"当成基准区，乘以比例算坐标。
+        // 但微信窗口在通知刚拉起、或个别 ROM 下，getBoundsInScreen() 返回的
+        // 是一个**缩放/平移过的坐标空间**（实测见过 [987,136,2085,2576]，
+        // 右边缘 2085 远超物理屏宽 1220）。用它算出来的中心点 (1869,2298)
+        // 直接跑到屏幕外面，于是：屏幕指引的圈画在屏幕外（看不见），
+        // 自动接听的点击也落在屏幕外（点了个寂寞，呼叫却一直在响）。
+        // 这就是"有圈的信息却看不到圈、点了也接不通"的根因之一。
+        //
+        // 修法：比例只作用在**物理屏幕尺寸**上，永远不碰那个可能失真的窗口坐标。
+        // 实测 1220×2712 截图里接听键中心 = 屏宽 80.3%、距屏底 11.4%，
+        // 这个比例是相对物理屏的，跨机型都成立。窗口只用来"判断是否全屏"，
+        // 不再参与坐标计算。
 
-        float x = baseLeft + baseW * ANSWER_X_RATIO;
-        // 距基准区域底部 11.4% → 换算成从顶部算的 y
-        float y = baseBottom - baseH * ANSWER_BOTTOM_RATIO;
-        int r = Math.round(baseW * ANSWER_RADIUS_RATIO);
+        float x = w * ANSWER_X_RATIO;
+        float y = h - h * ANSWER_BOTTOM_RATIO;   // 距屏底 11.4% → 从顶部算
+        int r = Math.round(w * ANSWER_RADIUS_RATIO);
 
         StringBuilder cal = new StringBuilder();
-        cal.append("接听键基准=").append(baseName)
-                .append(" 区域=[").append((int) baseLeft).append(",").append((int) baseTop)
-                .append(",").append((int) (baseLeft + baseW)).append(",").append((int) baseBottom).append("]")
+        cal.append("接听键基准=物理屏幕(").append(w).append("x").append(h).append(")")
                 .append(" → 中心=(").append(Math.round(x)).append(",").append(Math.round(y))
                 .append(") 半径=").append(r);
 
-        // 【v1.12 修正】这里原先是"用「摄像头已开 / 模糊背景」等同列按钮的横坐标
-        // 直接覆盖估算值"。用户实机截图比对后发现：那个按钮中心在 x≈909，
-        // 而真实的接听键中心在 x≈978，两者差了约 69px——它们**并不是严格的同一竖列**
-        // （微信把功能按钮排成"平均分布"，而接听/挂断是左右对称分列两端）。
-        // 用它校准反而把本来正确的 80.3% 带偏了，实测圈画到了按钮左上角。
-        // 现在改成：只把它当作"方向一致时的微调"，且偏差必须很小（≤2% 屏宽）才采纳；
-        // 超出这个范围说明两者本就不同列，宁可相信实测比例。
-        if (win != null && win.root != null) {
+        // 只在"微信窗口确实铺满整屏、且坐标也在屏幕内"时，才用同列按钮做≤2% 屏宽的微调；
+        // 一旦窗口坐标越界（说明坐标空间失真），直接跳过微调，避免把点带飞到屏幕外。
+        if (win != null && win.root != null
+                && win.bounds.width() > w * 0.9f && win.bounds.left >= -2 && win.bounds.right <= w + 2
+                && win.bounds.height() > h * 0.9f && win.bounds.top >= -2 && win.bounds.bottom <= h + 2) {
             for (String k : X_ANCHOR_KEYS) {
                 AccessibilityNodeInfo n = findNodeStatic(win.root, k);
                 if (n == null) continue;
@@ -726,15 +724,14 @@ public class CallHelperAccessibilityService extends AccessibilityService {
                     x = cx;
                     cal.append("；并用「").append(k).append("」微调横坐标（差 ")
                             .append(Math.round(diff)).append("px）→ x=").append(Math.round(x));
-                } else {
-                    cal.append("；「").append(k).append("」中心 x=").append(Math.round(cx))
-                            .append(" 与接听键估算位置差 ").append(Math.round(diff))
-                            .append("px，超过 ")
-                            .append(Math.round(w * X_ANCHOR_TOLERANCE))
-                            .append("px 说明不同列，忽略它、仍用实测比例");
                 }
                 break;
             }
+        } else if (win != null) {
+            cal.append("；窗口坐标疑似失真(区域=[")
+                    .append(win.bounds.left).append(",").append(win.bounds.top)
+                    .append(",").append(win.bounds.right).append(",").append(win.bounds.bottom)
+                    .append("])，跳过窗口微调，只用物理屏比例");
         }
         CallDiag.log("接听", cal.toString());
         return new int[]{Math.round(x), Math.round(y), r};
@@ -818,11 +815,38 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 点击节点：优先用无障碍的 ACTION_CLICK（找自身或最近的可点击祖先），
-     * 都不行再模拟手势点节点中心（微信不少按钮是自绘的，没有可点击属性）。
+     * 点击节点。
+     *
+     * 【v1.15 关键修复】原来先尝试无障碍 ACTION_CLICK，不行再改手势点节点中心。
+     * 但**微信 8.0.78 的接听键对 ACTION_CLICK 无响应**——performAction 返回 true、
+     * 看起来"点成功了"，呼叫却一直在响铃（运行记录里就是"已点击(精确定位) 但仍在响铃"）。
+     * 所以现在**优先用真实手势点屏幕坐标**（微信的按钮只认 onTouch，手势能命中），
+     * 只有手势 API 不可用（低于 Android 7）时才退回 ACTION_CLICK。
+     *
+     * 坐标取节点在屏幕上的中心；如果节点坐标落在屏幕外（微信窗口坐标空间失真时常见），
+     * 退化到"按物理屏比例算出的接听键位置"——那个坐标在真机上已验证是准的。
      */
     public boolean clickNode(AccessibilityNodeInfo node) {
         if (node == null) return false;
+        int[] sc = screenSize();
+        Rect r = new Rect();
+        node.getBoundsInScreen(r);
+        boolean onScreen = r.width() > 0 && r.height() > 0
+                && r.exactCenterX() >= 0 && r.exactCenterX() <= sc[0]
+                && r.exactCenterY() >= 0 && r.exactCenterY() <= sc[1];
+        if (onScreen) {
+            // 真机实测：微信的接听键比节点 bounds 略小，中心基本对得上，直接点中心即可
+            return tapScreen(r.exactCenterX(), r.exactCenterY());
+        }
+        // 节点坐标失真 → 退回到物理屏比例坐标（已验证准确）
+        int[] p = answerPointInternal(findWeChatWindow(), sc, navigationBarHeight());
+        if (p[0] > 0 && p[1] > 0) return tapScreen(p[0], p[1]);
+        // 手势都不可用（极老的系统）：最后再试一次 ACTION_CLICK
+        return actionClickNode(node);
+    }
+
+    /** 无障碍 ACTION_CLICK 兜底（仅当手势不可用或坐标全部失真时） */
+    private boolean actionClickNode(AccessibilityNodeInfo node) {
         AccessibilityNodeInfo cur = node;
         int hops = 0;
         while (cur != null && hops < 6) {
@@ -833,11 +857,6 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             }
             cur = cur.getParent();
             hops++;
-        }
-        Rect r = new Rect();
-        node.getBoundsInScreen(r);
-        if (r.width() > 0 && r.height() > 0) {
-            return tapScreen(r.exactCenterX(), r.exactCenterY());
         }
         return false;
     }

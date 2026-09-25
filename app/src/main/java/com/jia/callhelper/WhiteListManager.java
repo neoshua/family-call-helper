@@ -194,6 +194,11 @@ public class WhiteListManager {
         StringBuilder sb = new StringBuilder(s.length());
         for (int i = 0; i < s.length(); i++) {
             char ch = s.charAt(i);
+            // 零宽字符（\u200b 零宽空格、\u200c 零宽连字、\u200d 零宽接合子等）：
+            // 微信在「hh」中间塞的这种看不见的字符，会让 "h\u200bh" 和 "hh"
+            // 永远不相等，名单匹配因此全部落空。必须整体剥掉。
+            if (ch == '\u200b' || ch == '\u200c' || ch == '\u200d'
+                    || ch == '\uFEFF' || ch == '\u2060' || ch == '\u00AD') continue;
             // 全角 ASCII（！-～）转半角
             if (ch >= '\uFF01' && ch <= '\uFF5E') ch = (char) (ch - 0xFEE0);
             // 全角空格
