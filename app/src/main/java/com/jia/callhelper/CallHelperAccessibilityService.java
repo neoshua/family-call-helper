@@ -76,7 +76,13 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     public static final int UI_IN_CALL = 2;    // 已接通
 
     /** 微信来电界面的文案特征（实测：视频来电只有「邀请你视频通话」） */
-    private static final String[] RINGING_KEYS = {"邀请你", "邀请对方", "接听", "挂断"};
+    /**
+     * 来电界面的特征词。
+     * 注意**不能放「挂断」**：通话中的界面也有挂断键，放进去会把"已接通"误判成"正在响铃"
+     * （v1.16 之前正是因此出现「接听后还在提示」）。判断"是不是响铃中"只看
+     * 「邀请你…」和「接听」这两个只在响铃阶段存在的证据。
+     */
+    private static final String[] RINGING_KEYS = {"邀请你", "邀请对方", "接听"};
     /** 接听键可能的文字（少数版本/语言下存在） */
     private static final String[] ANSWER_KEYS = {"接听", "接听电话", "Answer", "Accept", "answer", "accept"};
     /** 通话已接通的特征（接通后才会出现静音/免提这类按钮） */
@@ -352,7 +358,13 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             return;
         }
 
-        if (isRinging(root)) {
+        // 【v1.16】先看「是不是已经接通」，再看「是不是在响铃」。
+        // 顺序很关键：通话中界面和响铃界面有一部分是重叠的（都有「挂断」），
+        // 先判响铃就会把刚接起来的电话当成新来电，导致接听后还在一直提示。
+        if (isInCall(root)) {
+            CallDiag.log("无障碍", "识别到微信「通话中」界面 → 不再当作新来电（避免接听后重复提醒）");
+            CallSessionManager.onWeChatCallAnswered(this);
+        } else if (isRinging(root)) {
             boolean video = findNode(root, "视频", false) != null
                     || findNode(root, "翻转", false) != null
                     || findNode(root, "模糊背景", false) != null;
@@ -363,8 +375,6 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             CallDiag.log("无障碍", "识别到微信来电界面：名字=" + name
                     + " 视频=" + video + " 有接听文字=" + (findNode(root, "接听", false) != null));
             CallSessionManager.onIncomingViaA11y(this, name, video);
-        } else if (isInCall(root)) {
-            CallSessionManager.onWeChatCallAnswered(this);
         } else if (findNode(root, "通话结束", false) != null
                 || findNode(root, "已结束", false) != null) {
             CallSessionManager.onWeChatCallEnded(this, "界面显示通话结束");
@@ -379,21 +389,56 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
     private boolean isRinging(AccessibilityNodeInfo root) {
         if (root == null) return false;
-        // 实测视频来电界面只有「邀请你视频通话」；语音来电同样是「邀请你...」开头。
-        // 因此以「邀请」为主特征，配合「通话/接听/挂断」任一即认定为来电。
-        boolean invite = findNode(root, "邀请", false) != null;
-        if (invite && (findNode(root, "通话", false) != null
-                || findNode(root, "接听", false) != null)) {
-            return true;
+        // 【v1.16 根因修复】
+        // 旧逻辑只要界面上出现「挂断」两个字就判定为来电 —— 但**接通之后**的通话界面
+        // 同样挂着「挂断」按钮。于是电话一接通，这里又把它当成"新的来电"，
+        // 上层（CallSessionManager.onIncomingViaA11y）立刻重开一次提醒会话，
+        // 表现为用户反馈的「可以自动接听了，但是接听后还在提示」。
+        // 现在改为三道判定，且**先排除通话中**：
+        if (isInCall(root)) {
+            // 已经在通话中，绝不能再判成"正在响铃的来电"
+            return false;
         }
-        // 兼容带完整文字的界面
+        // ① 「邀请你视频通话 / 邀请你语音通话」是来电最可靠的特征
         for (String k : RINGING_KEYS) {
-            if (findNode(root, k, false) != null) {
-                return findNode(root, "接听", false) != null
-                        || findNode(root, "挂断", false) != null;
+            if (findNode(root, k, false) != null) return true;
+        }
+        // ② 界面上还有「接听」键 → 一定还没接通
+        if (findNode(root, "接听", false) != null) return true;
+        return false;
+    }
+
+    /**
+     * 界面上是否显示通话时长（如「00:35」「1:02:33」）。
+     *
+     * 这是「已经接通」最硬的证据：微信只有真正通话中才会开始计时，
+     * 而像「挂断」这种按钮在响铃中和通话中都存在，没法用来区分。
+     */
+    private boolean hasCallDuration(AccessibilityNodeInfo root) {
+        if (root == null) return false;
+        Deque<AccessibilityNodeInfo> stack = new ArrayDeque<AccessibilityNodeInfo>();
+        stack.push(root);
+        int visited = 0;
+        while (!stack.isEmpty() && visited < 600) {
+            AccessibilityNodeInfo n = stack.pop();
+            visited++;
+            if (isCallDuration(n.getText()) || isCallDuration(n.getContentDescription())) {
+                return true;
+            }
+            for (int i = 0; i < n.getChildCount(); i++) {
+                AccessibilityNodeInfo c = n.getChild(i);
+                if (c != null) stack.push(c);
             }
         }
         return false;
+    }
+
+    /** 是否符合通话时长的写法：00:35 / 1:02:33 */
+    private static boolean isCallDuration(CharSequence cs) {
+        if (cs == null) return false;
+        String s = cs.toString().trim();
+        if (s.length() < 4 || s.length() > 9) return false;
+        return s.matches("\\d{1,2}:[0-5]\\d(:[0-5]\\d)?");
     }
 
     /** 是否已经接通（通话中界面） */
@@ -405,11 +450,14 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
     private boolean isInCall(AccessibilityNodeInfo root) {
         if (root == null) return false;
-        if (findNode(root, "邀请", false) != null) return false; // 还在响铃
+        // 还在响铃的铁证：界面上有「接听」键，或有「邀请你…通话」
+        if (findNode(root, "接听", false) != null) return false;
+        if (findNode(root, "邀请你", false) != null) return false;
         for (String k : IN_CALL_KEYS) {
             if (findNode(root, k, false) != null) return true;
         }
-        return false;
+        // 接通后才会出现的通话计时（00:35）——比「挂断」这类按钮可靠得多
+        return hasCallDuration(root);
     }
 
     // ---------------- 接听 ----------------

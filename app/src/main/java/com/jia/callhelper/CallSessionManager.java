@@ -135,6 +135,21 @@ public class CallSessionManager {
     private static int sAnnounceCount = 0;
     private static boolean sFirstAnnounce = true;
 
+    /**
+     * 【v1.16】「同一通电话被误判成新来电」的防护。
+     *
+     * 之前的现象：电话已经自动接起来了，App 还在每隔两秒重新播报一次、重新弹一次指引。
+     * 原因：无障碍把**通话中界面**误判成"新的来电界面"，而上一通会话已经 ended，
+     * 于是上层马上又开了一个全新的提醒会话。
+     *
+     * 防护：刚判定过"已接通"或"已结束"的一段时间内，如果此刻微信/系统仍显示「通话中」，
+     * 那么这次"来电"一定是同一通电话，直接忽略，不再重开会话。
+     */
+    private static long sLastAnsweredAt = 0L;
+    private static long sLastEndedAt = 0L;
+    /** 接通/结束后多久内启用上面的防护（足够长，覆盖一通电话的生命周期） */
+    private static final long SAME_CALL_GUARD_MS = 30_000L;
+
     // ---------------- 对外接口 ----------------
 
     /** 通知监听 / 无障碍发现微信来电时调用 */
@@ -142,6 +157,15 @@ public class CallSessionManager {
                                               PendingIntent openIntent) {
         Context app = ctx.getApplicationContext();
         CallDiag.init(app);
+
+        // 【v1.16】防「接听后还在提示」：上一通刚接通/刚结束，而此刻仍在通话中 →
+        // 这绝不是新来电，忽略。放在最前面，任何通道（通知/无障碍）都拦得住。
+        if (isSameCallMistakenAsNew()) {
+            CallDiag.log("来电", "忽略这次来电判定：上一通刚刚接通/结束，而此刻微信仍显示「通话中」"
+                    + " → 判定为同一通电话，不再重新提醒（防「接听后还在提示」）");
+            return;
+        }
+
         Session old = sSession;
         // 同一个人的重复通知（微信会刷新来电通知）直接忽略。
         // 注意这里不排除 handled 的会话：自动接听的点击重试正在进行时，
@@ -882,6 +906,7 @@ public class CallSessionManager {
         Session s = sSession;
         if (s == null || s.ended) return;
         s.answered = true;
+        sLastAnsweredAt = System.currentTimeMillis();
         CallDiag.log("会话", "通话已接通（" + reason + "）→ 停止播报与铃声");
         cleanup(ctx != null ? ctx.getApplicationContext() : sApp);
     }
@@ -889,8 +914,32 @@ public class CallSessionManager {
     private static synchronized void markEnded(String reason, Context ctx) {
         Session s = sSession;
         if (s == null || s.ended) return;
+        sLastEndedAt = System.currentTimeMillis();
         CallDiag.log("会话", "结束提醒（" + reason + "）");
         cleanup(ctx != null ? ctx.getApplicationContext() : sApp);
+    }
+
+    /**
+     * 这次"发现来电"是不是把**同一通已经接通的电话**当成了新来电？
+     *
+     * 判定条件（两条必须同时满足）：
+     *   ① 最近 30 秒内刚判定过"已接通"或"已结束"；
+     *   ② 此刻无障碍看到的是「通话中」界面；无障碍看不出来时，
+     *      退一步看系统音频是否仍处于通话模式。
+     * 反过来，只要无障碍**明确**看到的是响铃中的来电界面，就一定是新来电，绝不拦。
+     */
+    private static synchronized boolean isSameCallMistakenAsNew() {
+        long now = System.currentTimeMillis();
+        if (now - sLastAnsweredAt > SAME_CALL_GUARD_MS
+                && now - sLastEndedAt > SAME_CALL_GUARD_MS) {
+            return false;   // 离上一通已经很久了，不可能是同一通
+        }
+        CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+        if (svc != null) {
+            if (svc.isInCall()) return true;     // 明确在通话中 → 同一通
+            if (svc.isRinging()) return false;   // 明确在响铃 → 真的是新来电
+        }
+        return isPhoneInCall();
     }
 
     /** 当前是否是「全屏来电界面」（屏幕上真有绿色接听键的那一种形态） */
