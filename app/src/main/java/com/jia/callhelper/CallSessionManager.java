@@ -55,7 +55,18 @@ import android.os.Vibrator;
 public class CallSessionManager {
 
     public static class Session {
+        /** 微信那边显示的名字（备注名 / 昵称），用于匹配家人名单 */
         public final String caller;
+        /**
+         * **用来念给老人听的名字**。
+         *
+         * 用户明确要求：语音播报不要念微信昵称，要念本应用里配置的称呼。
+         * 因为微信备注名可能是「hh」「老王」这种老人根本听不懂的东西，
+         * 而 App 里配置的称呼是家人自己写的（「大儿子」「闺女」）——
+         * 老人一听就知道是谁打来的。
+         * 不在名单里的来电没有配置称呼，只能退回微信显示的名字。
+         */
+        public final String displayName;
         public final boolean video;
         /** 微信来电通知的 contentIntent：可拉起微信真实的通话界面（点击接听要靠它） */
         public final PendingIntent openIntent;
@@ -67,11 +78,14 @@ public class CallSessionManager {
         public volatile boolean answered = false; // 已确认接通
         public volatile boolean stoppedByUser = false;
         public volatile boolean wechatUiSeen = false; // 是否读到过微信来电界面（判断"界面消失"的前提）
+        public volatile boolean fullScreenSeen = false; // 是否出现过"全屏来电界面"（决定指引画圈还是只提示）
         public volatile int goneTicks = 0;   // 连续几次没看到微信来电界面
         public volatile int modeTicks = 0;   // 连续几次检测到系统音频处于通话状态
 
-        Session(String caller, boolean video, PendingIntent openIntent) {
+        Session(String caller, String displayName, boolean video, PendingIntent openIntent) {
             this.caller = caller;
+            this.displayName = (displayName == null || displayName.trim().isEmpty())
+                    ? caller : displayName;
             this.video = video;
             this.openIntent = openIntent;
         }
@@ -125,13 +139,18 @@ public class CallSessionManager {
         }
         cleanup(app);
 
+        // 先查名单：命中就用 App 里配置的称呼来播报（老人听得懂的「大儿子」，
+        // 而不是微信备注名「hh」）
+        WhiteListManager.Entry match = WhiteListManager.match(app, caller);
+        String displayName = match != null ? match.name : caller;
+
         sApp = app;
-        sSession = new Session(caller, video, openIntent);
+        sSession = new Session(caller, displayName, video, openIntent);
         sAnnounceCount = 0;
         sFirstAnnounce = true;
+        sPullAttempt = 0;
         WeChatClicker.reset();
 
-        WhiteListManager.Entry match = WhiteListManager.match(app, caller);
         int delay = WhiteListManager.prefs(app)
                 .getInt("auto_delay_sec", DEFAULT_AUTO_DELAY_SEC);
         // 自动接听需同时满足：总开关开启 + 该联系人标记了自动接听
@@ -142,7 +161,9 @@ public class CallSessionManager {
         }
         // 把「这次为什么接 / 为什么不接」记下来：这是排查「没自动接听」的第一现场
         StringBuilder why = new StringBuilder();
-        why.append("来电：").append(caller).append("（").append(video ? "视频" : "语音").append("）")
+        why.append("来电：微信显示名=").append(caller)
+                .append(" 播报称呼=").append(displayName)
+                .append("（").append(video ? "视频" : "语音").append("）")
                 .append(" 名单命中=").append(match != null ? match.name : "无")
                 .append(" 该联系人开自动接听=").append(match != null && match.auto)
                 .append(" 总开关=").append(master);
@@ -165,8 +186,19 @@ public class CallSessionManager {
         announce();
         waitForTtsThenMaybeRingtone(0, sSession);
 
-        // 屏幕上圈出接听键，让老人看得见该点哪里
-        GuideOverlay.show(app, caller, sSession.autoAnswer);
+        // 屏幕上圈出接听键，让老人看得见该点哪里。
+        // 注意：只有"全屏来电界面"才有接听键可圈；若此刻屏幕上只有通知/横幅，
+        // GuideOverlay 会只显示一条提示而不画圈，避免圈到一个空位置误导老人。
+        GuideOverlay.show(app, sSession.displayName, sSession.autoAnswer);
+
+        // 记录当前的界面形态：三种形态（全屏 / 通知栏 / 顶部横幅）要区别对待
+        CallHelperAccessibilityService svc0 = CallHelperAccessibilityService.get();
+        if (svc0 != null) {
+            int st = svc0.callUiState();
+            sSession.fullScreenSeen = st == CallHelperAccessibilityService.UI_RINGING;
+            CallDiag.log("来电", "此刻界面形态=" + uiStateName(st)
+                    + "（只有「全屏来电界面」上才有接听键；其余形态会先把全屏界面拉出来再点）");
+        }
 
         // 只在拿得到微信通知时发：目的不是"弹我们的界面"，
         // 而是亮屏 + 把微信真实的通话界面带到前台，好让模拟点击能落到微信上；
@@ -191,8 +223,17 @@ public class CallSessionManager {
     }
 
     /**
-     * 开始接听：把微信通话界面带到前台，然后模拟点击微信里真正的「接听」键。
-     * 本应用自己的界面已经没有了，这里点的是微信的按钮。
+     * 开始接听：**先确保屏幕上真的出现了「全屏来电界面」，再点接听键**。
+     *
+     * 为什么要多这一步（用户实测反馈）：
+     * 微信来电在手机上会出现三种形态 ——
+     *   ① 全屏来电界面：整屏的「邀请你视频通话」+ 左下红 / 右下绿两个圆钮 → 有接听键
+     *   ② 下拉通知栏里的来电通知 → 屏幕上没有接听键
+     *   ③ 屏幕顶部的横幅通知（heads-up） → 屏幕上也没有接听键
+     * 旧版本不管哪种形态都直接"按比例点右下角"，在 ②③ 下等于在通知栏/桌面上乱点：
+     * 接不到电话，还可能点到别的东西。
+     * 现在改为：不是全屏就先把它拉成全屏（等价于点一下微信来电通知），
+     * 拉起来了再点接听；始终拉不起来就交给老人自己点，并给出明确提示。
      */
     public static synchronized void performAccept(boolean auto) {
         Session s = sSession;
@@ -201,51 +242,127 @@ public class CallSessionManager {
         // 自动点击期间收起屏幕指引：此时不需要老人动手，
         // 而且浮层可能干扰"当前前台是不是微信"的判断
         GuideOverlay.hide();
+        sPullAttempt = 0;
+        sHandler.removeCallbacks(sEnsureFullScreen);
+        sHandler.postDelayed(sEnsureFullScreen, 300L);
+    }
 
-        final PendingIntent pi = s.openIntent;
-        sHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                Session cur = sSession;
-                if (cur == null || cur.ended) return;
+    /** 一次来电里最多尝试拉起几次全屏界面（每次间隔 1.2 秒） */
+    private static final int MAX_PULL_ATTEMPTS = 5;
+    private static final long PULL_INTERVAL_MS = 1200L;
+    private static int sPullAttempt = 0;
 
-                // 0) 先记录现场：锁屏状态下模拟点击会被系统拦下，这是「点了没反应」的常见原因
-                boolean locked = false;
-                try {
-                    KeyguardManager km = (KeyguardManager) sApp.getSystemService(Context.KEYGUARD_SERVICE);
-                    locked = km != null && km.isKeyguardLocked();
-                } catch (Exception ignore) {}
-                CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
-                boolean wechatFront = svc != null && svc.isWeChatForeground();
-                CallDiag.log("接听", "准备接听：无障碍=" + (svc != null)
-                        + " 微信在前台=" + wechatFront + " 锁屏=" + locked);
+    private static final Runnable sEnsureFullScreen = new Runnable() {
+        @Override
+        public void run() {
+            ensureFullScreenStep();
+        }
+    };
 
-                // 1) 微信通话界面不在最前面时，用微信自己的通知跳转把它拉起来。
-                //    界面不到前台，任何点击都落不到微信的接听键上。
-                if (!wechatFront && pi != null) {
-                    try {
-                        pi.send();
-                        CallDiag.log("接听", "微信不在前台，已发送通知跳转尝试拉起微信通话界面");
-                    } catch (Exception e) {
-                        CallDiag.log("接听", "拉起微信失败：" + e);
-                    }
-                }
+    /**
+     * 「先确认全屏，再点接听」的循环：
+     *   已经是全屏来电界面 → 交给点击器点接听
+     *   还不是 → 尝试拉起（点微信来电通知 / 启动微信），等 1.2 秒再看
+     *   拉了几次仍然不是 → 判定失败，改由语音 + 屏幕指引提醒老人自己点
+     * 期间若发现已经接通（例如老人自己先点了），立刻收工。
+     */
+    private static void ensureFullScreenStep() {
+        Session s = sSession;
+        if (s == null || s.ended || s.answered) return;
 
-                // 2) 交给点击器：三级定位 + 校验 + 失败兜底
-                WeChatClicker.answerWithRetry(CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
-                        new WeChatClicker.Callback() {
-                            @Override
-                            public void onResult(boolean clicked) {
-                                if (clicked) {
-                                    CallDiag.log("接听", "接听流程结束：已接上或已尽力");
-                                } else {
-                                    onAcceptFailed();
-                                }
+        final CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+        if (svc == null) {
+            CallDiag.log("接听", "无障碍服务未开启，无法自动接听");
+            onAcceptFailed();
+            return;
+        }
+
+        int state = svc.callUiState();
+        if (state == CallHelperAccessibilityService.UI_IN_CALL) {
+            markAnswered("点击前已确认在通话中", sApp);
+            return;
+        }
+        boolean full = svc.isFullScreenCallUi();
+        if (full) {
+            s.fullScreenSeen = true;
+            CallDiag.log("接听", "已确认处于全屏来电界面 → 开始点接听键");
+            WeChatClicker.answerWithRetry(CLICK_ATTEMPTS, CLICK_INTERVAL_MS,
+                    new WeChatClicker.Callback() {
+                        @Override
+                        public void onResult(boolean clicked) {
+                            if (clicked) {
+                                CallDiag.log("接听", "接听流程结束：已接上或已尽力");
+                            } else {
+                                onAcceptFailed();
                             }
-                        });
+                        }
+                    });
+            return;
+        }
+
+        sPullAttempt++;
+        if (sPullAttempt > MAX_PULL_ATTEMPTS) {
+            CallDiag.log("接听", "尝试拉起全屏来电界面 " + MAX_PULL_ATTEMPTS
+                    + " 次仍未出现（可能只有通知，或被系统限制了后台弹窗）→ 交给老人自己点");
+            onAcceptFailed();
+            return;
+        }
+
+        boolean locked = false;
+        try {
+            KeyguardManager km = (KeyguardManager) sApp.getSystemService(Context.KEYGUARD_SERVICE);
+            locked = km != null && km.isKeyguardLocked();
+        } catch (Exception ignore) {}
+        CallDiag.log("接听", "第 " + sPullAttempt + "/" + MAX_PULL_ATTEMPTS
+                + " 次：当前不是全屏来电界面（形态=" + uiStateName(state)
+                + " 锁屏=" + locked + "）→ 尝试拉起");
+        // 隔次发送跳转：微信从通知跳到"全屏来电界面"本身需要几百毫秒到一两秒，
+        // 每轮都发一次会反复弹微信。所以只发送、中间几轮留给它自己渲染，只做确认。
+        if (sPullAttempt % 2 == 1) {
+            pullWeChatCallToFront();
+        }
+        sHandler.postDelayed(sEnsureFullScreen, PULL_INTERVAL_MS);
+    }
+
+    /**
+     * 把微信的全屏来电界面调到最前面。
+     *
+     * ①首选：微信来电通知自带的 PendingIntent —— 等价于用户亲手点那条通知，
+     *   系统允许，效果也最准（微信自己会跳到全屏通话页）。
+     * ②兜底：直接启动微信。来电期间微信通常会把通话页顶到最前。
+     */
+    private static void pullWeChatCallToFront() {
+        Session s = sSession;
+        if (sApp == null) return;
+        if (s != null && s.openIntent != null) {
+            try {
+                s.openIntent.send();
+                CallDiag.log("接听", "已通过微信来电通知跳转，把全屏来电界面拉起来");
+                return;
+            } catch (Exception e) {
+                CallDiag.log("接听", "通知跳转失败：" + e);
             }
-        }, 500L);
-        // 接通后由守护检测（音频状态/无障碍界面）清理；另有 90 秒超时兜底
+        }
+        try {
+            Intent i = sApp.getPackageManager().getLaunchIntentForPackage("com.tencent.mm");
+            if (i == null) {
+                CallDiag.log("接听", "拿不到微信的启动入口，无法拉起全屏界面");
+                return;
+            }
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            sApp.startActivity(i);
+            CallDiag.log("接听", "已尝试启动微信，以调出全屏来电界面");
+        } catch (Exception e) {
+            CallDiag.log("接听", "启动微信失败：" + e);
+        }
+    }
+
+    private static String uiStateName(int st) {
+        switch (st) {
+            case CallHelperAccessibilityService.UI_RINGING: return "全屏来电界面";
+            case CallHelperAccessibilityService.UI_IN_CALL: return "已接通";
+            default: return "没有全屏来电界面（可能只有通知或横幅）";
+        }
     }
 
     /** 无障碍检测到通话已接通（出现静音/免提按钮） */
@@ -292,7 +409,7 @@ public class CallSessionManager {
         final Context app = ctx.getApplicationContext();
         sApp = app;
         final String text = name + "来" + (video ? "视频" : "语音")
-                + "电话了。想接就点屏幕右下角绿色的接听按钮，不想接就点左边的红色按钮。";
+                + "电话了。想接，就点屏幕上圈出的绿色按钮；不想接，就点左边的红色按钮。";
         TtsSpeaker.init(app);
         TtsSpeaker.speak(text);
         // 说明：试听不响铃。以前响铃是因为有个界面可以关掉它，
@@ -308,8 +425,9 @@ public class CallSessionManager {
                 }
             }
         } catch (Exception ignore) {}
-        // 顺便演示一遍屏幕指引，让用户知道来电时屏幕上会出现什么
-        GuideOverlay.show(app, name, false);
+        // 顺便演示一遍屏幕指引，让用户知道来电时屏幕上会出现什么。
+        // 试听时并没有真实的微信来电界面，所以用 showDemo 强制画出圆圈。
+        GuideOverlay.showDemo(app, name);
         final Object token = GuideOverlay.token();
         sHandler.postDelayed(new Runnable() {
             @Override
@@ -358,6 +476,19 @@ public class CallSessionManager {
             if (svc != null && svc.isInCall()) {
                 markAnswered("无障碍看到微信通话中界面", sApp);
                 return;
+            }
+
+            // 界面形态可能中途变化（例如一开始只有横幅通知，几秒后才弹出全屏来电界面）。
+            // 一旦变成全屏，就把屏幕指引从"只提示"升级成"圈出接听键"——
+            // 这才是老人真正需要看到的东西。
+            if (svc != null && !s.handled && svc.isFullScreenCallUi()) {
+                if (!s.fullScreenSeen) {
+                    s.fullScreenSeen = true;
+                    CallDiag.log("提醒", "界面已变为全屏来电界面 → 把屏幕指引升级为「圈出接听键」");
+                    if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer);
+                } else if (!GuideOverlay.showingRing()) {
+                    if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer);
+                }
             }
 
             // 系统音频进入通话状态 = 已经接上了（微信 VoIP 接通后会占用通话音频通道）。
@@ -447,7 +578,7 @@ public class CallSessionManager {
                 startVibration(sApp);
             }
         }
-        if (sApp != null) GuideOverlay.show(sApp, s.caller, false);
+        if (sApp != null) GuideOverlay.show(sApp, s.displayName, false);
 
         sHandler.removeCallbacks(sAnnounceLoop);
         sHandler.postDelayed(sAnnounceLoop, ANNOUNCE_INTERVAL_MS);
@@ -466,6 +597,12 @@ public class CallSessionManager {
         if (s == null || s.ended) return;
         CallDiag.log("会话", "结束提醒（" + reason + "）");
         cleanup(ctx != null ? ctx.getApplicationContext() : sApp);
+    }
+
+    /** 当前是否是「全屏来电界面」（屏幕上真有绿色接听键的那一种形态） */
+    private static boolean isFullScreenCallUi() {
+        CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+        return svc != null && svc.isFullScreenCallUi();
     }
 
     /** 系统音频是否已进入通话状态（微信 VoIP 接通后成立） */
@@ -489,19 +626,33 @@ public class CallSessionManager {
         }
 
         long remain = (s.autoAnswerAt - System.currentTimeMillis()) / 1000L + 1;
+        // 先看当前是全屏界面还是只有通知：两种情况下老人该做的动作不一样，
+        // 播报内容必须跟着变，否则屏幕上没有绿色圆圈却让他"点绿色圆圈"，只会让人懵。
+        boolean fullScreen = isFullScreenCallUi();
+        s.fullScreenSeen = s.fullScreenSeen || fullScreen;
+
         StringBuilder sb = new StringBuilder();
         if (sFirstAnnounce) {
             sFirstAnnounce = false;
-            sb.append(s.caller).append("来").append(s.video ? "视频" : "语音").append("电话了。");
+            // 念的是 App 里配置的称呼（displayName），不是微信备注名
+            sb.append(s.displayName).append("来")
+                    .append(s.video ? "视频" : "语音").append("电话了。");
             if (s.autoAnswer && remain > 0) {
-                sb.append(remain).append("秒后自动帮您接听。屏幕上会圈出绿色按钮。不想接就点红色按钮。");
-            } else {
+                sb.append(remain).append("秒后自动帮您接听。");
+                sb.append(fullScreen
+                        ? "屏幕上圈出的是绿色接听按钮。不想接就点左边的红色按钮。"
+                        : "正在打开微信接听界面，请稍等。");
+            } else if (fullScreen) {
                 sb.append("想接，就点屏幕上圈出的绿色按钮；不想接，就点左边的红色按钮。");
+            } else {
+                sb.append("请先点一下屏幕上的微信来电，打开后再点绿色的接听按钮。");
             }
         } else if (s.autoAnswer && remain > 0) {
             sb.append("还有 ").append(remain).append(" 秒自动接听。");
-        } else {
+        } else if (fullScreen) {
             sb.append("请点屏幕上圈出的绿色按钮接听。");
+        } else {
+            sb.append("请点一下屏幕上的微信来电，打开接听界面。");
         }
         TtsSpeaker.speak(sb.toString());
         sAnnounceCount++;
@@ -531,7 +682,7 @@ public class CallSessionManager {
                     ? new Notification.Builder(app, CHANNEL_ID)
                     : new Notification.Builder(app);
             b.setSmallIcon(R.drawable.ic_call)
-                    .setContentTitle(sSession.caller + " 来电话了")
+                    .setContentTitle(sSession.displayName + " 来电话了")
                     .setContentText((sSession.video ? "视频" : "语音") + "通话 · 点这里进微信接听")
                     .setPriority(Notification.PRIORITY_MAX)
                     .setCategory(Notification.CATEGORY_CALL)
@@ -646,6 +797,8 @@ public class CallSessionManager {
         sHandler.removeCallbacks(sAutoRun);
         sHandler.removeCallbacks(sWatchdog);
         sHandler.removeCallbacks(sTimeout);
+        sHandler.removeCallbacks(sEnsureFullScreen);
+        sPullAttempt = 0;
         WeChatClicker.cancel();
         stopSoundsAndVibration();
         GuideOverlay.hide();

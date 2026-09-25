@@ -47,6 +47,8 @@ public final class GuideOverlay {
     private static View sLayer;   // 指示层（不接收触摸）
     private static View sStopBar; // 停止按钮（唯一可点击的地方）
     private static boolean sShowing;
+    /** 本次是否真的画了"圈住接听键"的绿圈（不是全屏来电界面时只提示、不画圈） */
+    private static boolean sRingShown;
     /** 当前这次显示的身份标记：用于「只隐藏自己那一次」，避免试听的定时隐藏误伤真实来电 */
     private static Object sToken;
 
@@ -69,12 +71,35 @@ public final class GuideOverlay {
 
     /** 来电时显示指引。没有权限 / 用户关掉了开关时静默跳过 */
     public static synchronized void show(Context ctx, String caller, boolean autoAnswer) {
+        show(ctx, caller, autoAnswer, false);
+    }
+
+    /** 设置页「试听」用：此时并没有真实来电界面，强制画出圆圈只为了演示 */
+    public static synchronized void showDemo(Context ctx, String caller) {
+        show(ctx, caller, false, true);
+    }
+
+    /**
+     * @param forceRing 强制画圆圈。真实来电时不要用：只有屏幕上真有微信接听键
+     *                  才该画圈，否则会把老人指向一个空位置（见下面 ringOnly 的说明）。
+     */
+    private static synchronized void show(Context ctx, String caller, boolean autoAnswer,
+                                          boolean forceRing) {
         if (ctx == null) return;
         Context app = ctx.getApplicationContext();
         if (!isEnabled(app)) return;
         if (!canOverlay(app)) {
             CallDiag.log("指引", "没有「显示在其他应用上层」权限，本次不显示屏幕指引");
             return;
+        }
+        // 【关键】只有「全屏来电界面」上才有微信的接听键。
+        // 如果此刻屏幕上只有顶部横幅通知或下拉通知栏，右下角根本没有接听键，
+        // 这时候画一个绿圈等于是骗人。这种情况只显示一条文字提示。
+        boolean fullScreen = forceRing
+                || (CallHelperAccessibilityService.get() != null
+                    && CallHelperAccessibilityService.get().isFullScreenCallUi());
+        if (!fullScreen && !forceRing) {
+            CallDiag.log("指引", "当前不是全屏来电界面（只有通知/横幅）→ 本次只提示、不画接听圆圈");
         }
         hide();
         try {
@@ -87,7 +112,7 @@ public final class GuideOverlay {
             int[] p = CallHelperAccessibilityService.answerPoint(app);
 
             // ① 指示层：整层不接收触摸，事件穿透到微信
-            View layer = new GuideLayerView(app, p[0], p[1], p[2], caller, autoAnswer);
+            View layer = new GuideLayerView(app, p[0], p[1], p[2], caller, autoAnswer, fullScreen);
             WindowManager.LayoutParams lp1 = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
@@ -100,6 +125,7 @@ public final class GuideOverlay {
             lp1.gravity = Gravity.TOP | Gravity.LEFT;
             sWm.addView(layer, lp1);
             sLayer = layer;
+            sRingShown = fullScreen;
 
             // ② 停止按钮：能让老人/家人随时把声音关掉，不再有"关不掉"的情况
             sStopBar = buildStopBar(app);
@@ -117,11 +143,14 @@ public final class GuideOverlay {
 
             sShowing = true;
             sToken = new Object();
-            CallDiag.log("指引", "已在屏幕上圈出接听键：中心=(" + p[0] + "," + p[1] + ") 半径=" + p[2]
+            CallDiag.log("指引", (fullScreen
+                    ? "已在屏幕上圈出接听键：中心=(" + p[0] + "," + p[1] + ") 半径=" + p[2]
+                    : "已显示来电提示（当前不是全屏界面，未画圆圈）")
                     + " 自动接听=" + autoAnswer);
         } catch (Throwable t) {
             CallDiag.log("指引", "显示屏幕指引失败：" + t);
             sShowing = false;
+            sRingShown = false;
             sLayer = null;
             sStopBar = null;
             sToken = null;
@@ -155,11 +184,17 @@ public final class GuideOverlay {
         sLayer = null;
         sStopBar = null;
         sShowing = false;
+        sRingShown = false;
         sToken = null;
     }
 
     public static boolean isShowing() {
         return sShowing;
+    }
+
+    /** 当前屏幕上是否已经画着"圈住接听键"的绿圈（没有就说明只显示了提示） */
+    public static boolean showingRing() {
+        return sShowing && sRingShown;
     }
 
     // ---------------- 停止按钮 ----------------
@@ -213,15 +248,18 @@ public final class GuideOverlay {
         private final float mCx, mCy, mR;
         private final String mCaller;
         private final boolean mAuto;
+        private final boolean mFullScreen; // 是否画圈（只有全屏来电界面才画）
         private final float mDensity;
 
-        GuideLayerView(Context c, int cx, int cy, int r, String caller, boolean auto) {
+        GuideLayerView(Context c, int cx, int cy, int r, String caller, boolean auto,
+                       boolean fullScreen) {
             super(c);
             mCx = cx;
             mCy = cy;
             mR = r;
             mCaller = caller == null ? "家人" : caller;
             mAuto = auto;
+            mFullScreen = fullScreen;
             mDensity = getResources().getDisplayMetrics().density;
 
             mRing.setStyle(Paint.Style.STROKE);
@@ -253,54 +291,76 @@ public final class GuideOverlay {
             // 极淡压暗，让绿色圆圈更醒目（不影响看微信界面）
             canvas.drawColor(0x12000000);
 
-            float ringR = mR * 1.15f;
+            if (mFullScreen) {
+                float ringR = mR * 1.15f;
 
-            // 脉冲圈：向外扩散，抓注意力
-            long t = System.currentTimeMillis() % 1500L;
-            float k = t / 1500f;
-            int alpha = (int) (230 * (1f - k));
-            if (alpha > 0) {
-                mPulse.setAlpha(alpha);
-                canvas.drawCircle(mCx, mCy, ringR + mR * 0.55f * k, mPulse);
+                // 脉冲圈：向外扩散，抓注意力
+                long t = System.currentTimeMillis() % 1500L;
+                float k = t / 1500f;
+                int alpha = (int) (230 * (1f - k));
+                if (alpha > 0) {
+                    mPulse.setAlpha(alpha);
+                    canvas.drawCircle(mCx, mCy, ringR + mR * 0.55f * k, mPulse);
+                }
+                // 主圆环
+                canvas.drawCircle(mCx, mCy, ringR, mRing);
+
+                // 「点这里接听」标签 + 指向圆环的箭头
+                float arrowTipY = mCy - ringR - 8 * mDensity;
+                float arrowBaseY = arrowTipY - 38 * mDensity;
+                Path arrow = new Path();
+                arrow.moveTo(mCx, arrowTipY);
+                arrow.lineTo(mCx - 20 * mDensity, arrowBaseY);
+                arrow.lineTo(mCx + 20 * mDensity, arrowBaseY);
+                arrow.close();
+                canvas.drawPath(arrow, mArrow);
+
+                String label = "点这里接听";
+                float labelW = mLabelText.measureText(label) + 44 * mDensity;
+                float labelH = 52 * mDensity;
+                float labelBottom = arrowBaseY - 6 * mDensity;
+                RectF box = new RectF(mCx - labelW / 2, labelBottom - labelH,
+                        mCx + labelW / 2, labelBottom);
+                float radius = labelH / 2;
+                canvas.drawRoundRect(box, radius, radius, mLabel);
+                Paint.FontMetrics fm = mLabelText.getFontMetrics();
+                float baseline = box.centerY() - (fm.ascent + fm.descent) / 2;
+                canvas.drawText(label, mCx, baseline, mLabelText);
             }
-            // 主圆环
-            canvas.drawCircle(mCx, mCy, ringR, mRing);
 
-            // 「点这里接听」标签 + 指向圆环的箭头
-            float arrowTipY = mCy - ringR - 8 * mDensity;
-            float arrowBaseY = arrowTipY - 38 * mDensity;
-            Path arrow = new Path();
-            arrow.moveTo(mCx, arrowTipY);
-            arrow.lineTo(mCx - 20 * mDensity, arrowBaseY);
-            arrow.lineTo(mCx + 20 * mDensity, arrowBaseY);
-            arrow.close();
-            canvas.drawPath(arrow, mArrow);
-
-            String label = "点这里接听";
-            float labelW = mLabelText.measureText(label) + 44 * mDensity;
-            float labelH = 52 * mDensity;
-            float labelBottom = arrowBaseY - 6 * mDensity;
-            RectF box = new RectF(mCx - labelW / 2, labelBottom - labelH, mCx + labelW / 2, labelBottom);
-            float radius = labelH / 2;
-            canvas.drawRoundRect(box, radius, radius, mLabel);
-            Paint.FontMetrics fm = mLabelText.getFontMetrics();
-            float baseline = box.centerY() - (fm.ascent + fm.descent) / 2;
-            canvas.drawText(label, mCx, baseline, mLabelText);
-
-            // 顶部提示：谁打来的 + 怎么操作
-            String tip = mAuto
-                    ? (mCaller + " 来电话了 · 正在自动接听…")
-                    : (mCaller + " 来电话了 · 想接就点绿色圆圈；不想接点左边的红色按钮");
+            // 顶部提示：谁打来的 + 怎么操作。
+            // 画圈时提示跟着圆圈居中；只提示时（屏幕上还没有接听键）居中在屏幕顶部。
+            float anchorX = mFullScreen ? mCx : getWidth() / 2f;
+            String tip = tipText();
             float tipW = mTipText.measureText(tip) + 40 * mDensity;
             float tipH = 44 * mDensity;
             float tipTop = 122 * mDensity;
-            RectF tipBox = new RectF(mCx - tipW / 2, tipTop, mCx + tipW / 2, tipTop + tipH);
+            float left = anchorX - tipW / 2;
+            // 防呆：窄屏上文字可能超出屏幕，夹回可视区域
+            if (left < 12 * mDensity) left = 12 * mDensity;
+            if (left + tipW > getWidth() - 12 * mDensity) {
+                left = Math.max(12 * mDensity, getWidth() - 12 * mDensity - tipW);
+            }
+            RectF tipBox = new RectF(left, tipTop, left + tipW, tipTop + tipH);
             canvas.drawRoundRect(tipBox, 12 * mDensity, 12 * mDensity, mTipBg);
             Paint.FontMetrics tfm = mTipText.getFontMetrics();
-            canvas.drawText(tip, mCx, tipBox.centerY() - (tfm.ascent + tfm.descent) / 2, mTipText);
+            canvas.drawText(tip, tipBox.centerX(),
+                    tipBox.centerY() - (tfm.ascent + tfm.descent) / 2, mTipText);
 
             // 脉冲动画：每 40ms 重绘一帧（视图移除后自动停止）
             if (isAttachedToWindow()) postInvalidateDelayed(40L);
+        }
+
+        /** 提示语要跟"当前屏幕上到底有没有接听键"对上，不能指着一个不存在的按钮说话 */
+        private String tipText() {
+            if (mFullScreen) {
+                return mAuto
+                        ? (mCaller + " 来电话了 · 正在自动接听…")
+                        : (mCaller + " 来电话了 · 想接就点绿色圆圈；不想接点左边的红色按钮");
+            }
+            return mAuto
+                    ? (mCaller + " 来电话了 · 正在打开接听界面…")
+                    : (mCaller + " 来电话了 · 请点一下屏幕上的微信来电");
         }
     }
 

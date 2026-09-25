@@ -33,8 +33,25 @@ import java.util.List;
  * 模糊背景 / 摄像头已开」，底部那两个圆钮（红挂断、绿接听）在无障碍树里
  * 可能只有一个图标，既没有 text 也没有 contentDescription。
  * 旧版本只按「接听」两个字找节点，于是必然找不到 → 永远点不到 → 不会自动接听。
- * 现在改成三级定位：语义（文字/描述）→ 几何（屏幕右下角那个可点击圆钮）→
- * 比例坐标兜底（兜底只点一次，避免点歪到挂断）。
+ * 现在改成四级定位：语义（文字/描述）→ 几何（屏幕右下角那个可点击圆钮）→
+ * 镜像（由左下角挂断键左右对称推出）→ 比例坐标兜底（兜底只点一次）。
+ *
+ * ⚠️ v1.11 的两处重要修正（都来自用户实测）：
+ *
+ * 【一】先判形态，再点击。
+ * 微信来电在屏幕上会出现三种形态：① 全屏来电界面（有绿/红按钮）
+ * ② 下拉通知栏里的通知 ③ 屏幕顶部的横幅通知。只有 ① 上才有接听键。
+ * 旧版本不管哪种形态都去"按比例点右下角"，在 ②③ 下等于在通知栏/桌面上乱点。
+ * 现在 {@link #isFullScreenCallUi()} 先判形态，只有 ① 才允许点；
+ * 其余形态返回 {@link #RESULT_NOT_RINGING}，由上层先把全屏界面拉出来（见
+ * CallSessionManager.ensureFullScreenStep）。
+ *
+ * 【二】定位基准从"物理屏幕"改成"微信窗口"。
+ * 有些手机底部有三键虚拟导航栏，微信窗口的底部比物理屏幕底部高一个导航栏
+ * （约 48dp / 144px）。仍然按整屏比例算，接听键的点会偏低 128px ——
+ * 而按钮半径只有 109px，于是每一下都点进导航栏里。
+ * 现在基准取微信窗口的实际区域（三键导航时它自动不含导航栏），
+ * 拿不到窗口时退化为「屏幕高度 − 导航栏高度」（导航栏高度从无障碍窗口实测）。
  */
 public class CallHelperAccessibilityService extends AccessibilityService {
 
@@ -46,6 +63,17 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     public static final int RESULT_CLICKED_BLIND = 2;   // 盲点坐标（不确定，不要再点第二次）
     public static final int RESULT_NOT_WECHAT = 3;      // 微信界面不在前台，需要先把它拉起来
     public static final int RESULT_NO_WINDOW = 4;       // 连界面都拿不到，无法操作
+    /**
+     * 微信在，但**当前不是全屏来电界面** —— 例如只显示了顶部横幅通知（heads-up）
+     * 或下拉通知栏里的通知。这时屏幕上根本没有接听键，绝不能盲点坐标
+     * （会点到通知、状态栏或别的东西）。必须先把它拉成全屏来电界面再点。
+     */
+    public static final int RESULT_NOT_RINGING = 5;
+
+    /** 微信通话界面形态 */
+    public static final int UI_NONE = 0;       // 没有全屏来电界面（只有通知/横幅，或已结束）
+    public static final int UI_RINGING = 1;    // 全屏来电界面（有绿色接听键）
+    public static final int UI_IN_CALL = 2;    // 已接通
 
     /** 微信来电界面的文案特征（实测：视频来电只有「邀请你视频通话」） */
     private static final String[] RINGING_KEYS = {"邀请你", "邀请对方", "接听", "挂断"};
@@ -135,17 +163,34 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     // ---------------- 界面状态判断 ----------------
 
     /**
-     * 取微信窗口的根节点。
+     * 微信窗口的根节点 + 它在屏幕上的实际区域。
+     *
+     * {@code bounds} 是本版本新增的关键数据：微信的按钮是摆在自己窗口里的，
+     * 所以「接听键在窗口的什么位置」才是稳定的；而窗口本身会随导航方式变化
+     * （三键导航时窗口底部比物理屏幕底部高出一个导航栏）。
+     */
+    public static class WeChatWin {
+        public AccessibilityNodeInfo root;
+        public final Rect bounds = new Rect();
+    }
+
+    /**
+     * 在所有窗口里找属于微信的那一个，并记下它的屏幕区域。
      *
      * 为什么不直接用 getRootInActiveWindow()：来电时我们会在屏幕最上层显示
      * 「屏幕指引」浮层（GuideOverlay），它是另一个窗口。若只取"最上面的活动窗口"，
      * 有可能拿到我们自己的浮层，于是误判成「当前不在微信」→ 不点击、也判断不出
      * 是否已接通。所以这里改为在所有窗口里找属于微信的那一个，做到"浮层在场也不受影响"。
      */
-    private AccessibilityNodeInfo wechatWindowRoot() {
+    private WeChatWin findWeChatWindow() {
         try {
             AccessibilityNodeInfo active = getRootInActiveWindow();
-            if (active != null && isWeChatWindow(active)) return active;
+            if (active != null && isWeChatWindow(active)) {
+                WeChatWin w = new WeChatWin();
+                w.root = active;
+                try { active.getBoundsInScreen(w.bounds); } catch (Exception ignore) {}
+                return w;
+            }
         } catch (Exception ignore) {}
         try {
             List<AccessibilityWindowInfo> wins = getWindows();
@@ -153,11 +198,118 @@ public class CallHelperAccessibilityService extends AccessibilityService {
                 for (AccessibilityWindowInfo win : wins) {
                     if (win == null) continue;
                     AccessibilityNodeInfo r = win.getRoot();
-                    if (r != null && isWeChatWindow(r)) return r;
+                    if (r == null || !isWeChatWindow(r)) continue;
+                    // 只认**真的显示在屏幕上**的微信窗口。
+                    // getWindows() 也可能返回后台窗口，而后台窗口上当然没有接听键，
+                    // 拿它来判断"是不是全屏来电界面"会得出完全错误的结论。
+                    try {
+                        if (!r.isVisibleToUser()) continue;
+                    } catch (Exception ignore) {}
+                    WeChatWin w = new WeChatWin();
+                    w.root = r;
+                    try { win.getBoundsInScreen(w.bounds); } catch (Exception ignore) {}
+                    if (w.bounds.isEmpty()) {
+                        try { r.getBoundsInScreen(w.bounds); } catch (Exception ignore) {}
+                    }
+                    return w;
                 }
             }
         } catch (Exception ignore) {}
         return null;
+    }
+
+    private AccessibilityNodeInfo wechatWindowRoot() {
+        WeChatWin w = findWeChatWindow();
+        return w != null ? w.root : null;
+    }
+
+    /**
+     * 导航栏高度（像素）。取不到时返回 0（当作手势导航，那时窗口确实铺满整屏）。
+     *
+     * 为什么要它：见 {@link #answerPointInternal}。三键导航的手机上，
+     * 接听键的实际位置比"按物理屏幕比例"算出来的要高一个导航栏 ——
+     * 不扣掉就会点到导航栏里去（实测偏差 128px，而按钮半径只有 109px，必然点空）。
+     */
+    private int navigationBarHeight() {
+        int[] size = screenSize();
+        int screenW = size[0], screenH = size[1];
+        if (screenH <= 0) return 0;
+        // ① 最准：无障碍能直接看到导航栏窗口，再按实际情况量出高度
+        //    （手势导航只有一条细条，三键导航约 48dp，两者高度差很多，所以必须实测）
+        //    注意：无障碍把状态栏和导航栏都归为 TYPE_SYSTEM，只能靠"位置+形状"认出来——
+        //    导航栏的特征是：横跨整个屏幕宽度、紧贴屏幕最底部、高度不大。
+        try {
+            List<AccessibilityWindowInfo> wins = getWindows();
+            if (wins != null) {
+                int best = 0;
+                for (AccessibilityWindowInfo w : wins) {
+                    if (w == null || w.getType() != AccessibilityWindowInfo.TYPE_SYSTEM) continue;
+                    Rect r = new Rect();
+                    w.getBoundsInScreen(r);
+                    int hh = r.height();
+                    if (hh <= 0 || hh >= screenH / 4) continue;          // 太高，肯定不是
+                    if (r.width() < screenW * 0.9f) continue;            // 没横跨屏幕宽度，不是
+                    if (r.bottom < screenH - 2) continue;                // 没贴住屏幕底部，不是
+                    if (hh > best) best = hh;
+                }
+                if (best > 0) return best;
+            }
+        } catch (Exception ignore) {}
+        // ② 退一步：读系统资源里的导航栏高度
+        try {
+            int id = getResources().getIdentifier("navigation_bar_height", "dimen", "android");
+            if (id > 0) {
+                int hh = getResources().getDimensionPixelSize(id);
+                if (hh > 0 && hh < screenH / 4) return hh;
+            }
+        } catch (Exception ignore) {}
+        return 0;
+    }
+
+    /**
+     * 当前是否是**全屏来电界面**（也就是屏幕上有绿色接听键可点的那个界面）。
+     *
+     * 这是 v1.11 的核心修正之一。用户实测发现微信来电在手机上会出现三种形态：
+     *   ① 全屏来电界面（点开就是整屏的「邀请你视频通话」+ 绿/红按钮）→ 能点接听
+     *   ② 下拉通知栏里的来电通知 → 屏幕上没有接听键
+     *   ③ 屏幕顶部的横幅通知（heads-up）→ 屏幕上也没有接听键
+     * 旧版本不管哪种形态都去「按比例盲点右下角」，在 ②③ 下等于在通知栏/桌面上瞎点，
+     * 既接不到电话，还可能点到别的东西。现在先判形态：只有 ① 才允许点。
+     *
+     * 判断依据：
+     *   - 拿到微信窗口，且窗口里读得到「邀请…通话」等来电特征 → 是
+     *   - 微信界面完全自绘、一个字都读不到，但窗口本身占满屏幕（不是小窗/分屏）→ 也认
+     *     （否则这种机型就彻底没法自动接听了）
+     */
+    public boolean isFullScreenCallUi() {
+        WeChatWin w = findWeChatWindow();
+        if (w == null || w.root == null) return false;
+        if (isInCall(w.root)) return false;
+        if (isRinging(w.root)) return true;
+        // 完全自绘的界面：读不到任何文字，只能靠"窗口是不是铺满整屏"来判断
+        if (!canReadUiText(w.root) && isWindowFullScreen(w)) {
+            return true;
+        }
+        return false;
+    }
+
+    /** 微信通话界面当前形态 */
+    public int callUiState() {
+        WeChatWin w = findWeChatWindow();
+        if (w == null || w.root == null) return UI_NONE;
+        if (isInCall(w.root)) return UI_IN_CALL;
+        if (isFullScreenCallUi()) return UI_RINGING;
+        return UI_NONE;
+    }
+
+    /** 窗口是否基本铺满整屏（用来把「全屏来电界面」和「小窗/分屏/聊天页」区分开） */
+    private boolean isWindowFullScreen(WeChatWin w) {
+        if (w == null) return false;
+        int[] size = screenSize();
+        int w2 = size[0], h2 = size[1];
+        if (w2 <= 0 || h2 <= 0) return false;
+        int usableH = h2 - navigationBarHeight();
+        return w.bounds.width() >= w2 * 0.9f && w.bounds.height() >= usableH * 0.85f;
     }
 
     /** 扫描当前微信界面，判断处于来电/通话中/已结束哪种状态 */
@@ -234,10 +386,15 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     /**
      * 尝试按下微信的接听键。
      *
-     * 三级定位，前一级失败才用下一级：
+     * 前提：**必须是全屏来电界面**。三种形态（全屏 / 通知栏 / 顶部横幅）里只有全屏
+     * 有接听键；其余形态直接返回 {@link #RESULT_NOT_RINGING}，由上层先把界面拉起来
+     * （见 CallSessionManager.ensureFullScreenThenAnswer），绝不盲点。
+     *
+     * 四级定位，前一级失败才用下一级：
      *   1) 语义：节点里有 text/contentDescription 命中「接听 / Answer」
      *   2) 几何：屏幕右下方那个可点击的圆形按钮（微信接听键是纯图标）
-     *   3) 兜底：按屏幕比例盲点一次
+     *   3) 镜像：只找到左下角的挂断键时，按左右对称推出接听键
+     *   4) 兜底：按**微信窗口**比例盲点一次
      *
      * 返回值区分「精确」与「盲点」，因为盲点无法确认，调用方不应重复盲点
      * ——重复点右下角，在已经接通的情况下有碰到挂断键的风险。
@@ -252,15 +409,26 @@ public class CallHelperAccessibilityService extends AccessibilityService {
      *                   在已经接通的情况下有碰到挂断键的风险。
      */
     public int answerCall(boolean allowBlind) {
-        AccessibilityNodeInfo root = wechatWindowRoot();
+        WeChatWin win = findWeChatWindow();
+        AccessibilityNodeInfo root = win != null ? win.root : null;
         if (root == null) {
-            if (!allowBlind) {
-                CallDiag.log("接听", "拿不到微信界面，且本次已用过坐标兜底，不再重复盲点");
-                return RESULT_NO_WINDOW;
-            }
-            boolean ok = tapAnswerByRatio();
-            CallDiag.log("接听", "拿不到微信界面，按屏幕比例盲点接听键 -> " + ok);
-            return ok ? RESULT_CLICKED_BLIND : RESULT_NO_WINDOW;
+            // 连微信窗口都没有：屏幕上可能是通知栏/横幅，也可能是别的应用。
+            // 这种情况**不做坐标盲点**——盲点等于在别人脸上乱戳，
+            // 而且即使戳中也没有接听键。交给上层去把全屏界面拉出来。
+            CallDiag.log("接听", "拿不到微信界面（可能只有通知/横幅）→ 不盲点，先要求拉起全屏来电界面");
+            return RESULT_NOT_WECHAT;
+        }
+        if (isInCall(root)) {
+            CallDiag.log("接听", "已经在通话中，无需再接");
+            return RESULT_CLICKED_PRECISE; // 上层会用 isInCall 再次确认
+        }
+        if (!isFullScreenCallUi()) {
+            CharSequence pkg = root.getPackageName();
+            CallDiag.log("接听", "当前不是全屏来电界面（前台包名="
+                    + (pkg == null ? "未知" : pkg) + "）→ 不点击，先要求拉起全屏界面。"
+                    + "读到的文字=" + (canReadUiText(root) ? "有" : "无")
+                    + " 窗口=" + win.bounds.toShortString());
+            return RESULT_NOT_RINGING;
         }
 
         // 1) 语义
@@ -300,8 +468,8 @@ public class CallHelperAccessibilityService extends AccessibilityService {
      * 知道其中任意一个的位置，就能推算出另一个（x 关于屏幕中线做镜像）。
      */
     private float[] mirrorOfDecline(AccessibilityNodeInfo root) {
-        int[] size = screenSize();
-        int w = size[0], h = size[1];
+        Rect base = baseRect();
+        int w = base.width(), h = base.height();
         if (w <= 0 || h <= 0) return null;
         int minSide = Math.round(40 * getResources().getDisplayMetrics().density);
 
@@ -317,8 +485,8 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             n.getBoundsInScreen(r);
             if (isClickableish(n) && r.width() >= minSide && r.height() >= minSide) {
                 float cx = r.exactCenterX(), cy = r.exactCenterY();
-                boolean leftHalf = cx < w * 0.45f;
-                boolean bottomArea = cy > h * 0.55f;
+                boolean leftHalf = cx < base.left + w * 0.45f;
+                boolean bottomArea = cy > base.top + h * 0.55f;
                 boolean roundish = r.height() != 0
                         && (float) r.width() / r.height() > 0.6f
                         && (float) r.width() / r.height() < 1.7f;
@@ -335,7 +503,22 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         if (best == null) return null;
         Rect r = new Rect();
         best.getBoundsInScreen(r);
-        return new float[]{w - r.exactCenterX(), r.exactCenterY()};
+        // 左右镜像：接听键中心 x = 基准区左边界 + 右边界 − 挂断键 x
+        return new float[]{base.left + (base.right - r.exactCenterX()), r.exactCenterY()};
+    }
+
+    /**
+     * 定位基准区域：优先微信窗口（自动排除导航栏），拿不到就用「整屏减去导航栏」。
+     * 三键导航的手机上，用整屏当基准会让"右半边 / 下半边"的判断整体偏移。
+     */
+    private Rect baseRect() {
+        int[] s = screenSize();
+        Rect base = new Rect(0, 0, s[0], Math.max(0, s[1] - navigationBarHeight()));
+        WeChatWin win = findWeChatWindow();
+        if (win != null && win.bounds.width() > 0 && win.bounds.height() > 0) {
+            base.set(win.bounds);
+        }
+        return base;
     }
 
     private AccessibilityNodeInfo findAnswerNode(AccessibilityNodeInfo root) {
@@ -352,8 +535,8 @@ public class CallHelperAccessibilityService extends AccessibilityService {
      * 微信来电界面上，右下角只有接听键一个这样的按钮（挂断在左边）。
      */
     private AccessibilityNodeInfo findAnswerByGeometry(AccessibilityNodeInfo root) {
-        int[] size = screenSize();
-        int w = size[0], h = size[1];
+        Rect base = baseRect();
+        int w = base.width(), h = base.height();
         if (w <= 0 || h <= 0) return null;
         int minSide = Math.round(40 * getResources().getDisplayMetrics().density);
 
@@ -370,14 +553,14 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             boolean clickable = isClickableish(n);
             if (clickable && r.width() >= minSide && r.height() >= minSide) {
                 float cx = r.exactCenterX(), cy = r.exactCenterY();
-                boolean rightHalf = cx > w * 0.55f;
-                boolean bottomArea = cy > h * 0.55f;
+                boolean rightHalf = cx > base.left + w * 0.55f;
+                boolean bottomArea = cy > base.top + h * 0.55f;
                 boolean roundish = r.height() != 0
                         && (float) r.width() / r.height() > 0.6f
                         && (float) r.width() / r.height() < 1.7f;
                 if (rightHalf && bottomArea && roundish) {
                     // 越靠右下越可能是接听键
-                    int score = (int) (cx - w / 2) + (int) (cy - h / 2);
+                    int score = (int) (cx - base.exactCenterX()) + (int) (cy - base.exactCenterY());
                     if (score > bestScore) {
                         bestScore = score;
                         best = n;
@@ -401,60 +584,93 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 兜底：按屏幕比例盲点接听键位置（右下角，80.3% 屏宽 / 距底部 11.4% 屏高）。
+     * 兜底：按**微信窗口**的比例盲点接听键位置（80.3% 宽 / 距窗口底部 11.4% 高）。
      * 若当前界面能读到「摄像头已开 / 模糊背景 / 翻转」这类按钮，就用它们的横坐标
      * 校准——这些按钮与接听键是同一竖列，比固定比例更准。
      */
     private boolean tapAnswerByRatio() {
-        AccessibilityNodeInfo root = wechatWindowRoot();
+        WeChatWin win = findWeChatWindow();
         int[] size = screenSize();
         if (size[0] <= 0 || size[1] <= 0) return false;
-        int[] p = answerPointInternal(root, size);
+        int[] p = answerPointInternal(win, size, navigationBarHeight());
         return tapScreen(p[0], p[1]);
     }
 
     /**
      * 计算接听键中心点（屏幕坐标），返回 {x, y, 半径}。
      *
-     * 坐标系约定（按用户的思路）：以**屏幕左下角为原点**，
-     * 接听键中心在水平方向占屏宽 80.3%，在垂直方向距底部占屏高 11.4%。
-     * 换成左上角为原点的 Android 屏幕坐标就是 y = 屏高 × (1 - 0.114)。
+     * 【坐标系基准：微信窗口，而不是整个物理屏幕】—— 这是用户实测反馈后修正的。
      *
-     * 若手里有微信界面节点（视频来电上方的「摄像头已开」等按钮与接听键同列），
-     * 会用它们的横坐标覆盖那个 80.3%，进一步提高准确度。
+     * 用户的原话：「有些手机底部是有虚拟按键的…你是不是需要在 y 轴上把虚拟按键的
+     * 高度去掉再定位」。对的，而且这是**必然点空**的原因：
+     * 微信的按钮摆在**自己的窗口**里。手势导航时窗口铺满整屏，实测
+     * （1220×2712 截图）接听键中心在距屏幕底部 11.4% 屏高处；
+     * 但三键导航时窗口底部比物理屏幕底部高出一个导航栏（约 48dp / 144px），
+     * 仍然按整屏算就会偏低 128px —— 而按钮半径只有 109px，于是每一下都点进导航栏。
+     *
+     * 所以基准改成：优先微信窗口的实际区域（三键导航时它自动不含导航栏），
+     * 拿不到窗口时用「屏幕高度 − 导航栏高度」。
+     *
+     * 坐标系约定（用户的思路）：以**基准区域左下角为原点**，
+     * 接听键中心在水平方向占 80.3% 宽、垂直方向距底部 11.4% 高。
      *
      * 供屏幕指引浮层（GuideOverlay）与自动点击共用，保证"圈出来的位置"
      * 与"实际点的位置"永远是同一个点。
      */
     public static int[] answerPoint(Context ctx) {
         CallHelperAccessibilityService svc = sInstance;
-        AccessibilityNodeInfo root = svc != null ? svc.wechatWindowRoot() : null;
+        WeChatWin win = svc != null ? svc.findWeChatWindow() : null;
         int[] size = svc != null ? svc.screenSize() : screenSizeFrom(ctx);
-        int[] p = answerPointInternal(root, size);
-        return p;
+        return answerPointInternal(win, size, svc != null ? svc.navigationBarHeight() : 0);
     }
 
-    private static int[] answerPointInternal(AccessibilityNodeInfo root, int[] size) {
+    private static int[] answerPointInternal(WeChatWin win, int[] size, int navBarHeight) {
         int w = size[0], h = size[1];
-        float x = w * ANSWER_X_RATIO;
-        // 距底部 11.4% 屏高 → 换算成从顶部算的 y
-        float y = h - h * ANSWER_BOTTOM_RATIO;
-        int r = Math.round(w * ANSWER_RADIUS_RATIO);
 
-        if (root != null) {
+        // ① 定基准区域
+        float baseLeft = 0f, baseTop = 0f, baseW = w, baseBottom = h;
+        String baseName;
+        if (win != null && win.bounds.width() > w * 0.5f
+                && win.bounds.height() > (h - navBarHeight) * 0.5f) {
+            baseLeft = win.bounds.left;
+            baseTop = win.bounds.top;
+            baseW = win.bounds.width();
+            baseBottom = win.bounds.bottom;
+            baseName = "微信窗口";
+        } else if (navBarHeight > 0) {
+            baseBottom = h - navBarHeight;
+            baseName = "屏幕减去导航栏(" + navBarHeight + "px)";
+        } else {
+            baseName = "整屏（未检测到导航栏）";
+        }
+        float baseH = baseBottom - baseTop;
+
+        float x = baseLeft + baseW * ANSWER_X_RATIO;
+        // 距基准区域底部 11.4% → 换算成从顶部算的 y
+        float y = baseBottom - baseH * ANSWER_BOTTOM_RATIO;
+        int r = Math.round(baseW * ANSWER_RADIUS_RATIO);
+
+        StringBuilder cal = new StringBuilder();
+        cal.append("接听键基准=").append(baseName)
+                .append(" 区域=[").append((int) baseLeft).append(",").append((int) baseTop)
+                .append(",").append((int) (baseLeft + baseW)).append(",").append((int) baseBottom).append("]")
+                .append(" → 中心=(").append(Math.round(x)).append(",").append(Math.round(y))
+                .append(") 半径=").append(r);
+
+        if (win != null && win.root != null) {
             for (String k : X_ANCHOR_KEYS) {
-                AccessibilityNodeInfo n = findNodeStatic(root, k);
+                AccessibilityNodeInfo n = findNodeStatic(win.root, k);
                 if (n == null) continue;
                 Rect rect = new Rect();
                 n.getBoundsInScreen(rect);
                 if (rect.width() > 0 && rect.exactCenterX() > w * 0.5f) {
                     x = rect.exactCenterX();
-                    CallDiag.log("接听", "用「" + k + "」校准接听键横坐标 → x=" + (int) x
-                            + "（按屏幕宽度估算为 " + (int) (w * ANSWER_X_RATIO) + "）");
+                    cal.append("；并用「").append(k).append("」校准横坐标 → x=").append(Math.round(x));
                     break;
                 }
             }
         }
+        CallDiag.log("接听", cal.toString());
         return new int[]{Math.round(x), Math.round(y), r};
     }
 
@@ -495,7 +711,10 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
     /** 当前微信界面里是否读得到任何文字/描述（用来判断「读不到」还是「真的没接通」） */
     public boolean canReadUiText() {
-        AccessibilityNodeInfo root = wechatWindowRoot();
+        return canReadUiText(wechatWindowRoot());
+    }
+
+    public boolean canReadUiText(AccessibilityNodeInfo root) {
         if (root == null) return false;
         Deque<AccessibilityNodeInfo> stack = new ArrayDeque<AccessibilityNodeInfo>();
         stack.push(root);

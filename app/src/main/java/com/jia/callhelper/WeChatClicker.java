@@ -164,6 +164,8 @@ public final class WeChatClicker {
             case CallHelperAccessibilityService.RESULT_CLICKED_PRECISE: return "已点击(精确定位)";
             case CallHelperAccessibilityService.RESULT_CLICKED_BLIND: return "已点击(坐标兜底)";
             case CallHelperAccessibilityService.RESULT_NOT_WECHAT: return "微信界面不在前台";
+            case CallHelperAccessibilityService.RESULT_NOT_RINGING:
+                return "不是全屏来电界面（屏幕上还没有接听键）";
             default: return "读不到界面";
         }
     }

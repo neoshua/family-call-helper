@@ -83,14 +83,39 @@ public class WhiteListManager {
                 name + "|" + (number == null ? "" : number) + "|" + (auto ? "1" : "0")).apply();
     }
 
-    /** 来电人是否在家人名单（按备注名精确/包含、号码包含匹配） */
+    /**
+     * 来电人是否在家人名单。
+     *
+     * 分两轮匹配，顺序很重要：
+     *   第一轮按「微信备注名 / 微信号」—— 这是最可靠的依据（配置时就是照微信里抄的）
+     *   第二轮才按「称呼」—— 有些人会把称呼直接填成微信里显示的名字
+     * 先匹配备注名可以避免"称呼"造成误命中（例如称呼是「儿子」，
+     * 而微信里恰好有个叫「儿子的同事」的陌生人）。
+     */
     public static Entry match(Context ctx, String caller) {
         if (caller == null || caller.trim().isEmpty()) return null;
         String c = caller.trim();
-        for (Entry e : load(ctx)) {
-            if (c.equals(e.name)) return e;
-            if (e.name != null && e.name.length() >= 2 && c.contains(e.name)) return e;
-            if (e.number != null && !e.number.isEmpty() && c.contains(e.number)) return e;
+        List<Entry> list = load(ctx);
+
+        for (Entry e : list) {
+            if (e.number == null) continue;
+            String n = e.number.trim();
+            if (!n.isEmpty() && c.equals(n)) return e;
+        }
+        for (Entry e : list) {
+            if (e.number == null) continue;
+            String n = e.number.trim();
+            if (n.length() >= 2 && c.contains(n)) return e;
+        }
+        for (Entry e : list) {
+            if (e.name == null) continue;
+            String n = e.name.trim();
+            if (!n.isEmpty() && c.equals(n)) return e;
+        }
+        for (Entry e : list) {
+            if (e.name == null) continue;
+            String n = e.name.trim();
+            if (n.length() >= 2 && c.contains(n)) return e;
         }
         return null;
     }
