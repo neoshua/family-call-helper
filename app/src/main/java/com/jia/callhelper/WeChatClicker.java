@@ -22,7 +22,6 @@ public final class WeChatClicker {
     }
 
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
-    /** 已废弃：见下面的 sTasks（延时任务改成按标签记账，不再用单槽）。保留字段仅为注释引用 */
     /** 精确点击后等待多久去确认是否接通 */
     private static final long VERIFY_MS = 1200L;
     /** 盲点后等待多久去确认（盲点慢一点，微信界面切换需要时间） */
@@ -48,6 +47,7 @@ public final class WeChatClicker {
     public static void reset() {
         cancel();
         sBlindUsedThisCall = false;
+        sBlindTotal = 0;
     }
 
     /**
@@ -71,6 +71,21 @@ public final class WeChatClicker {
      * 这就是本文件 answerWithRetry 里用 cancel() 而非 reset() 的原因。
      */
     private static boolean sBlindUsedThisCall;
+    /**
+     * 【v1.21】本次来电累计盲点次数（只增）。
+     *
+     * 为什么不能像以前那样"整通只准一次"：本机（微信整页自绘）上，
+     * 坐标盲点是**唯一**真正送出点击的路径，而每次盲点后往往拿不到任何证据
+     * （既不显示通话中、也读不到文字）。"一次"的配额意味着一通电话只点一下，
+     * 万一那一下因为坐标偏差没点上（三键导航、异形屏、用户还没校准），
+     * 后面每一轮都被配额挡住 —— 屏幕上的圈一直在，却再也没有新的点击产生。
+     *
+     * 4 次是怎么定的：间隔至少是 2.5 秒确认 + 5.5 秒复核 + 1.5 秒轮间隔，
+     * 4 次约 30 秒量级，仍在微信自己的响铃窗口内；再多的边际收益很小，
+     * 而一旦已经接通还继续戳右下角，风险是碰到同一行左边的挂断键。
+     */
+    private static int sBlindTotal;
+    private static final int MAX_BLIND_TOTAL = 4;
 
     /** 取消还在排队中的点击重试（例如对方已经挂断） */
     public static void cancel() {
@@ -135,14 +150,49 @@ public final class WeChatClicker {
             return;
         }
 
-        // 整通来电只允许一次坐标盲点：第一次放行，之后一律要求精确定位。
-        int r = svc.answerCall(!sBlindUsedThisCall);
+        // 【v1.22】先"看一眼"屏幕：截图里认得出微信那个绿色接听钮，就点它的真实圆心，
+        // 而不是点按比例估算出来的坐标。多截一张图的代价可以忽略，
+        // 却能把"位置算歪了、于是点空"这一整类失败消掉。
+        svc.requestLook();
+
+        // 【v1.21】整通来电最多允许 4 次坐标盲点（详见 MAX_BLIND_TOTAL 的说明）。
+        int r = svc.answerCall(!sBlindUsedThisCall && sBlindTotal < MAX_BLIND_TOTAL);
         CallDiag.log("接听", "第 " + n + "/" + attempts + " 次尝试，结果=" + nameOf(r));
 
         if (r == CallHelperAccessibilityService.RESULT_CLICKED_BLIND) {
             sBlindUsedThisCall = true;
-            // 盲点无法确认点中了什么：只等结果，不再重复点
+            sBlindTotal++;
+            // 盲点无法确认点中了什么：先等界面切换，再下结论。
+            //
+            // 【v1.21 修复】这里原本 2.5 秒一到就无条件给结论（callback.onResult），
+            // 而 Once 一旦触发就会 cancel() 掉所有排队任务 ——
+            // 于是下面那个 5.5 秒的"延时复核"**从来一次都没执行过**，是彻底的死代码。
+            // 后果在整页自绘的机器上特别明显：盲点后 2.5 秒判失败，
+            // 而微信从响铃切到通话中有时要 2 秒以上 → 白判失败、多耗一轮。
+            // 现在改成分两级：2.5 秒只在**能确认**时给结论，拿不到证据就等 5.5 秒那次。
             post(TAG_VERIFY, new Runnable() {
+                @Override
+                public void run() {
+                    if (svc.isInCall()) {
+                        CallDiag.log("接听", "盲点 2.5s 确认：已检测到通话中 → 按成功处理");
+                        if (callback != null) callback.onResult(true);
+                        return;
+                    }
+                    if (svc.canReadUiText()) {
+                        boolean ok = !svc.isRinging();
+                        CallDiag.log("接听", "盲点 2.5s 确认：" + (ok ? "已不在响铃" : "仍在响铃")
+                                + " → " + (ok ? "按成功处理" : "判定失败"));
+                        if (callback != null) callback.onResult(ok);
+                        return;
+                    }
+                    // 界面完全自绘、一个文字节点都没有 —— 此刻**没有资格下结论**。
+                    // 保持沉默，把决定权交给 5.5 秒那次复核。
+                    CallDiag.log("接听", "盲点 2.5s：界面仍完全读不到内容"
+                            + " → 暂不下结论，等 5.5s 复核（避免过早判失败）");
+                }
+            }, VERIFY_BLIND_MS);
+            // 5.5 秒复核：这是自绘界面下真正给结论的地方。
+            post(TAG_RECHECK, new Runnable() {
                 @Override
                 public void run() {
                     boolean inCall = svc.isInCall();
@@ -151,37 +201,26 @@ public final class WeChatClicker {
                     String reason;
                     if (inCall) {
                         ok = true;
-                        reason = "已检测到通话中";
+                        reason = "已进入通话中";
                     } else if (readable) {
-                        // 界面读得到内容，可以用「还在不在响铃」判断
                         ok = !svc.isRinging();
                         reason = ok ? "已不在响铃" : "仍在响铃";
                     } else {
-                        // 微信界面完全自绘、一个文字节点都没有：这里其实无法确认。
-                        // 不能谎报「没接上」——万一真接通了却在通话里播报
-                        // 「没接上，请自己点接听」，老人会更混乱。
-                        // 但也**不能一律当成成功**：v1.13 起自动接听会多轮重试，
-                        // 若这里直接"成功"返回，上层就不再重试了，
-                        // 万一是真的没点上（坐标偏了几十像素很常见），
-                        // 整通电话就白白错过 —— 那正是用户反馈的"一直没自动接听"。
-                        // 所以按"未确认"处理：交给上层再试一轮（第二次不会再盲点，
-                        // 只会走精确点击，见 sBlindUsedThisCall）。
                         ok = false;
-                        reason = "界面完全读不到内容，无法确认（已按坐标送出点击，交由下一轮再试）";
+                        reason = "仍然一个字都读不到，无法确认是否接上";
+                        // 【v1.21】关键：既然压根没证据，就不能占用盲点配额。
+                        // 这是本机（整页自绘）最常走的路径 —— 不归还配额的话，
+                        // 一通电话**只真正点了一下**，剩下每一轮都因为没有证据而被拒绝再点，
+                        // 日志却照常打印「第 N/8 轮 → 尝试点击接听键」，看着像一直在努力。
+                        if (sBlindUsedThisCall) {
+                            sBlindUsedThisCall = false;
+                            CallDiag.log("接听", "无证据 → 归还本次盲点配额（已用 "
+                                    + sBlindTotal + "/" + MAX_BLIND_TOTAL + " 次）");
+                        }
                     }
-                    CallDiag.log("接听", "坐标盲点后确认：" + reason + " → " + (ok ? "按成功处理" : "判定失败"));
+                    CallDiag.log("接听", "盲点 5.5s 复核：" + reason
+                            + " → " + (ok ? "判定成功" : "判定失败"));
                     if (callback != null) callback.onResult(ok);
-                }
-            }, VERIFY_BLIND_MS);
-            // 【v1.13】盲点后不确定时，再补一次延时复核：微信从"响铃"切到"通话中"
-            // 有时要 2 秒以上，只测一次容易误判成失败，导致上层又白点一轮。
-            post(TAG_RECHECK, new Runnable() {
-                @Override
-                public void run() {
-                    if (svc.isInCall()) {
-                        CallDiag.log("接听", "盲点延时复核：已进入通话中");
-                        if (callback != null) callback.onResult(true);
-                    }
                 }
             }, VERIFY_BLIND_MS + 3000L);
             return;
@@ -240,8 +279,10 @@ public final class WeChatClicker {
     //   · 结果：每一轮点击白等 11 秒，8 轮下来远超 90 秒硬超时，
     //     整通电话实际只跑得完 1~2 轮 —— 这正是"有时接得上、有时接不上"的机理。
     // 现在用 Map 按任务名分别记账，谁也不顶谁。
-    private static final java.util.HashMap<String, Runnable> sTasks =
-            new java.util.HashMap<String, Runnable>();
+    // 用 ConcurrentHashMap：cancel() 可能从回调线程被调用（Once 包的是外部回调），
+    // HashMap 在这种情况下并发迭代会直接 ConcurrentModificationException。
+    private static final java.util.concurrent.ConcurrentHashMap<String, Runnable> sTasks =
+            new java.util.concurrent.ConcurrentHashMap<String, Runnable>();
 
     private static void post(String tag, Runnable r, long delayMs) {
         cancel(tag);
@@ -265,32 +306,8 @@ public final class WeChatClicker {
         }
     }
 
-    // ---------------- 兼容旧调用 ----------------
-
-    public static void retryClick(String label, int attempts, long intervalMs) {
-        retryClick(label, attempts, intervalMs, null);
-    }
-
-    public static void retryClick(final String label, final int attempts, final long intervalMs,
-                                  final Callback callback) {
-        final CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
-        if (svc == null) {
-            if (callback != null) callback.onResult(false);
-            return;
-        }
-        if (svc.clickNodeWithText(label)) {
-            if (callback != null) callback.onResult(true);
-            return;
-        }
-        if (attempts > 1) {
-            sHandler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    retryClick(label, attempts - 1, intervalMs, callback);
-                }
-            }, intervalMs);
-            return;
-        }
-        if (callback != null) callback.onResult(false);
-    }
+    // 【v1.21】这里以前留着两套「按文字找按钮并重试」的公开入口 retryClick()。
+    // 全量扫描确认：除了它自己递归调用自己，工程里没有任何地方再用。
+    // 而它走的正是"找『接听』两个字"的老路（见本文件开头的 v1.9 说明），
+    // 留着只会被后人当成可用方案再捡起来 —— 已经删除。
 }

@@ -5,6 +5,7 @@
     android:accessibilityFlags="flagDefault|flagReportViewIds|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
+    android:canTakeScreenshot="true"
     android:notificationTimeout="300"
     android:packageNames="com.tencent.mm"
     android:description="@string/accessibility_desc"/>

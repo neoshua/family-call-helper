@@ -39,6 +39,10 @@ public class SettingsActivity extends Activity {
     private SeekBar mVolume;
     private TextView mVolumePct;
     private Switch mAutoMaster;
+    /** 【v1.22】总开关：关掉之后整个 App 的核心功能全部停摆 */
+    private Switch mAppEnabled;
+    /** 【v1.22】只响应家人名单：名单外的人一律不理会 */
+    private Switch mOnlyWhitelist;
     private Switch mGuideOverlay;
     private Switch mGuideRing;
     private Switch mGuideTip;
@@ -46,10 +50,28 @@ public class SettingsActivity extends Activity {
     private TextView mAnswerPointStatus;
     private EditText mDelay;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
+    /**
+     * 页面是否已经不可见。
+     *
+     * 【v1.21】语音引擎轮询（pollTtsStatus / waitTtsForTest）是 500ms 一次的
+     * postDelayed 自递归，最多跑 8 秒。以前 Activity 被返回键关掉以后这些回调还在跑，
+     * 继续调 updateTtsStatus() 去摸已经销毁的 View。虽然 TextView 摸一下不至于崩，
+     * 但这条回调链会把整个 Activity 一直拽着不让回收。现在两条防线都加上。
+     */
+    private volatile boolean mAlive;
+
+    @Override
+    protected void onDestroy() {
+        // 一次性撤销所有还排队的轮询（"null" = 不管 token，全部取消）
+        mAlive = false;
+        mHandler.removeCallbacksAndMessages(null);
+        super.onDestroy();
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        mAlive = true;
         setContentView(R.layout.activity_settings);
 
         mStatusNotif = (TextView) findViewById(R.id.status_notification);
@@ -60,6 +82,8 @@ public class SettingsActivity extends Activity {
         mStatusAutoSummary = (TextView) findViewById(R.id.status_auto_summary);
         mVolume = (SeekBar) findViewById(R.id.seek_volume);
         mVolumePct = (TextView) findViewById(R.id.tv_volume_pct);
+        mAppEnabled = (Switch) findViewById(R.id.sw_app_enabled);
+        mOnlyWhitelist = (Switch) findViewById(R.id.sw_only_whitelist);
         mAutoMaster = (Switch) findViewById(R.id.sw_auto_master);
         mGuideOverlay = (Switch) findViewById(R.id.sw_guide_overlay);
         mDelay = (EditText) findViewById(R.id.input_auto_delay);
@@ -250,6 +274,43 @@ public class SettingsActivity extends Activity {
             }
         });
 
+        // 【v1.22】总开关 + 名单策略。这两个要在所有开关之前绑好：
+        // 它们是"这次来电到底要不要理"的入口条件，比后面那些细分开关更靠前。
+        if (mAppEnabled != null) {
+            mAppEnabled.setChecked(WhiteListManager.isAppEnabled(this));
+            tvAppEnabledHint();
+            mAppEnabled.setOnCheckedChangeListener(
+                    new android.widget.CompoundButton.OnCheckedChangeListener() {
+                        @Override
+                        public void onCheckedChanged(android.widget.CompoundButton v,
+                                                     boolean isChecked) {
+                            WhiteListManager.setAppEnabled(SettingsActivity.this, isChecked);
+                            tvAppEnabledHint();
+                            Toast.makeText(SettingsActivity.this,
+                                    isChecked
+                                            ? "已启用：继续监听微信来电、播报并按需自动接听"
+                                            : "已停用：不再监听微信来电，也不再播报、不再自动接听",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+        }
+        if (mOnlyWhitelist != null) {
+            mOnlyWhitelist.setChecked(WhiteListManager.isOnlyWhitelist(this));
+            mOnlyWhitelist.setOnCheckedChangeListener(
+                    new android.widget.CompoundButton.OnCheckedChangeListener() {
+                        @Override
+                        public void onCheckedChanged(android.widget.CompoundButton v,
+                                                     boolean isChecked) {
+                            WhiteListManager.setOnlyWhitelist(SettingsActivity.this, isChecked);
+                            Toast.makeText(SettingsActivity.this,
+                                    isChecked
+                                            ? "只响应家人名单里的人，其他人的微信通知一律不理会"
+                                            : "名单外的人来电也会播报（仍然不会自动接听）",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+        }
+
         // 自动接听总开关（默认关）
         mAutoMaster.setChecked(WhiteListManager.prefs(this).getBoolean("auto_answer_master", false));
         mAutoMaster.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
@@ -303,6 +364,15 @@ public class SettingsActivity extends Activity {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
     }
 
+    /** 让「启用助手」那句提示始终反映真实状态（关着的时候说清楚"现在什么都不会做"） */
+    private void tvAppEnabledHint() {
+        TextView hint = (TextView) findViewById(R.id.tv_app_enabled_hint);
+        if (hint == null) return;
+        hint.setText(WhiteListManager.isAppEnabled(this)
+                ? "当前已启用：会监听微信来电、播报来电人，并按名单设置自动接听。"
+                : "当前已停用：不再监听微信来电、不播报、不画绿圈、不自动接听。");
+    }
+
     /** 显示当前生效的接听键位置（默认 / 已自己校准） */
     private void updateAnswerPointStatus() {
         if (mAnswerPointStatus == null) return;
@@ -322,6 +392,7 @@ public class SettingsActivity extends Activity {
 
     /** 轮询语音引擎状态，就绪或超时后停止 */
     private void pollTtsStatus(final int n) {
+        if (!mAlive) return; // 页面已关：不要再碰任何 View
         updateTtsStatus();
         if (TtsSpeaker.isUsable() || n >= TTS_POLL_MAX) return;
         // 到了 2 秒、5 秒还没结论，就主动说一句探测语：
@@ -388,6 +459,7 @@ public class SettingsActivity extends Activity {
 
     /** 试听时的引擎等待：最多 8 秒，用来给状态卡一个准确结论 */
     private void waitTtsForTest(final int n) {
+        if (!mAlive) return; // 页面已关：停止轮询，也不再弹 Toast
         updateTtsStatus();
         if (TtsSpeaker.isUsable()) return;
         if (n >= TTS_POLL_MAX) {
@@ -470,6 +542,7 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        mAlive = true;
         refreshStatus();
         // 从校准浮层返回时刷新一下「接听键位置」的说明（可能刚保存过）
         updateAnswerPointStatus();

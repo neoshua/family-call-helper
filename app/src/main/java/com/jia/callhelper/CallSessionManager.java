@@ -7,11 +7,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
-import android.media.AudioAttributes;
 import android.media.AudioManager;
-import android.media.MediaPlayer;
-import android.media.RingtoneManager;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -27,16 +23,15 @@ import android.os.Vibrator;
  * 2. 语音播报「谁打来的 + 该怎么操作」，同时在屏幕上圈出绿色接听键（见 GuideOverlay）
  * 3. 白名单家人 + 自动接听开关都满足 → 等 N 秒后自动点微信的接听键；
  *    其余来电只提醒，老人在微信界面自己点（本来就只有一个真按钮，不再有多余界面）
- * 4. 接通 / 挂断 / 对方取消 / 用户点「停止提醒」/ 超过 90 秒 → 立即停掉一切声音
+ * 4. 接通 / 挂断 / 对方取消 / 用户点「停止提醒」/ 超过硬超时 → 立即停掉一切声音
  *
  * ⚠️ 关于声音的三条硬规则（都是踩过坑之后加的）：
  *
- * 【规则一】有语音播报就绝不响铃。
- * 语音引擎是异步加载的，刚来电时还没就绪。老版本在来电瞬间就判断「没有语音」
- * 并启动铃声，等引擎就绪后只在下一轮播报时才去关铃声 —— 中间这几秒
- * 语音和铃声是叠在一起的。现在改为：先等最多 4 秒给引擎机会，
- * 确认真的不可用（STATE_INIT_FAILED / NO_CHINESE）才响铃；
- * 任何时刻只要语音可用就立刻把铃声停掉。
+ * 【规则一】本应用**从不播放铃声**。
+ * 微信来电自己就有铃声，我们再响一遍就是两个声音叠着吵，还会盖住语音播报 ——
+ * 这是用户明确要求的，v1.21 已把整条铃声兜底链路（MediaPlayer + RingtoneManager）
+ * 连同相关字段一起删掉了。语音引擎没就绪时，做法是「再等等」（最多 4 秒），
+ * 而不是「降级放个响的」。
  *
  * 【规则二】播报必须持续到真的接听或挂断。
  * 不再因为「自动接听流程已启动」就停止播报（旧版把 handled 当作停止条件，
@@ -45,7 +40,7 @@ import android.os.Vibrator;
  * 【规则三】必须能被真正停下来。
  * 之前的停止只依赖「微信通知文字变成已取消/已结束」，但实测微信挂断来电时
  * 通知是**直接消失**的，不是改文字。所以挂断后 App 根本不知道，
- * 铃声要一直响到硬超时。现在有五个独立的停止源：
+ * 播报要一直念到硬超时。现在有五个独立的停止源：
  *   ① 无障碍看到微信通话中界面（接通）
  *   ② 系统音频进入通话状态（接通）
  *   ③ 微信来电通知被移除（挂断/接听/取消都会触发）
@@ -138,16 +133,22 @@ public class CallSessionManager {
     private static final long HARD_TIMEOUT_MS = 120_000L;
     private static final int MAX_ANNOUNCE = 30;
 
-    /** 自动接听重试次数与间隔：微信界面常比通知晚几百毫秒出现，需要重试 */
-    private static final int CLICK_ATTEMPTS = 8;
+    /**
+     * 自动接听重试次数与间隔：微信界面常比通知晚几百毫秒出现，需要重试。
+     *
+     * 【v1.21】从 8 次降到 5 次。微信的 NOT_WECHAT / NO_WINDOW 这种状态
+     * 不会在 800ms 内自己变好，多出来的几次只是空等，白白吃掉整通电话的时间预算
+     * （每多一次 = 0.8s + 1.2s 校验）。真需要重来时，外层还有多项式重试（sRetryAccept），
+     * 那里带更长的间隔，比在这一层空转有用得多。
+     */
+    private static final int CLICK_ATTEMPTS = 5;
     private static final long CLICK_INTERVAL_MS = 800L;
 
-    private static Session sSession;
-    private static Context sApp;
+    private static volatile Session sSession;
+    private static volatile Context sApp;
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
-    private static Vibrator sVibrator;
-    private static MediaPlayer sRingtone;
-    private static PowerManager.WakeLock sWakeLock;
+    private static volatile Vibrator sVibrator;
+    private static volatile PowerManager.WakeLock sWakeLock;
     private static int sAnnounceCount = 0;
     private static boolean sFirstAnnounce = true;
 
@@ -173,6 +174,16 @@ public class CallSessionManager {
                                               PendingIntent openIntent) {
         Context app = ctx.getApplicationContext();
         CallDiag.init(app);
+
+        // 【v1.22】总开关的最后一道闸。
+        // 通知监听、无障碍入口各有一道，这里是第三道 —— 三条水路都堵上：
+        // 万一将来有新的入口被加进来忘了加闸，走到这里也会被拦住，不会闹出声。
+        if (!WhiteListManager.isAppEnabled(app)) {
+            CallDiag.log("来电", "总开关已关闭 → 忽略这次来电判定");
+            return;
+        }
+
+        boolean master = WhiteListManager.prefs(app).getBoolean("auto_answer_master", false);
 
         // 【v1.16】防「接听后还在提示」：上一通刚接通/刚结束，而此刻仍在通话中 →
         // 这绝不是新来电，忽略。放在最前面，任何通道（通知/无障碍）都拦得住。
@@ -217,6 +228,25 @@ public class CallSessionManager {
         // 先查名单：命中就用 App 里配置的称呼来播报（老人听得懂的「大儿子」，
         // 而不是微信备注名「hh」）
         WhiteListManager.Entry match = WhiteListManager.match(app, caller);
+
+        // 【v1.22】名单外的人：**完全无声，什么都不做**。
+        //
+        // 用户明确要求："除了我设置的人员外，其他的微信通知一律不做任何操作。"
+        // 而且这也是上面那个误触发 bug 的直接后果 —— 名单之外的名字一旦被误判成来电，
+        // 就会开始播报、还会被塞进「最近未匹配的来电人」列表里。彻底不理会最干净。
+        //
+        // 注意用 matchQuiet 还是 match：上面已经查过一次，这里直接用结果即可，
+        // 但那个「未匹配来电人」列表必须是 **只有真来电且经过名单验证后** 才会记，
+        // 所以这里什么都不做 —— 不播报、不震动、不通知、不进列表、不画绿圈。
+        if (match == null && WhiteListManager.isOnlyWhitelist(app)) {
+            CallDiag.log("来电", "来电人「" + caller + "」（"
+                    + (video ? "视频" : "语音") + "）不在家人名单里"
+                    + " → 按设置「只响应名单内的家人」，本次完全不理会"
+                    + "（不播报、不震动、不提示）。若希望陌生人来电也提醒，"
+                    + "可在设置里把「只响应名单内的家人」关掉");
+            return;
+        }
+
         String displayName = match != null ? match.name : caller;
 
         sApp = app;
@@ -228,8 +258,6 @@ public class CallSessionManager {
 
         int delay = WhiteListManager.prefs(app)
                 .getInt("auto_delay_sec", DEFAULT_AUTO_DELAY_SEC);
-        // 自动接听需同时满足：总开关开启 + 该联系人标记了自动接听
-        boolean master = WhiteListManager.prefs(app).getBoolean("auto_answer_master", false);
         if (match != null && match.auto && master) {
             sSession.autoAnswer = true;
             sSession.autoAnswerAt = System.currentTimeMillis() + delay * 1000L;
@@ -258,7 +286,13 @@ public class CallSessionManager {
         }
         CallDiag.log("来电", why.toString());
         // 每次都记一份环境快照：换机、升级微信、权限被系统收回，都能从这里看出来
-        CallDiag.snapshot(app, "来电时");
+        CallDiag.snapshotAsync(app, "来电时");
+
+        // 【v1.22】来电一开始就要一张截图：认出微信那颗绿钮的真实圆心，
+        // 后面每一次点击都用它，而不是用按比例估算出来的坐标。
+        // 早要一张是因为后面还有几秒的播报/延时，数据到得比第一下点击早。
+        CallHelperAccessibilityService svcLook = CallHelperAccessibilityService.get();
+        if (svcLook != null) svcLook.requestLook(true);
 
         acquireWakeLock(app);
         startVibration(app);
@@ -400,8 +434,16 @@ public class CallSessionManager {
         sHandler.postDelayed(sEnsureFullScreen, 300L);
     }
 
-    /** 一次来电里最多尝试几种"把微信来电页拉起来并接听"的轮次（每轮约 1.2 秒） */
-    private static final int MAX_PULL_ATTEMPTS = 8;
+    /**
+     * 一次来电里最多尝试几种"把微信来电页拉起来并接听"的轮次。
+     *
+     * 【v1.21】从 8 轮降到 6 轮。一轮的最坏耗时是
+     *   CLICK_INTERVAL_MS×5 + 校验 ≈ 5 秒（正常），最坏 CLICK_CHAIN_BUDGET_MS = 11 秒，
+     *   再加轮间隔 1.5 秒 → 6 轮最坏约 75 秒。
+     * 旧值 8 轮最坏要 100 秒，配合开场延时（最多 60 秒）**必然**超过硬超时，
+     * 结果是 sTimeout 在重试跑到一半就来 markEnded，把整条链路掐掉。
+     */
+    private static final int MAX_PULL_ATTEMPTS = 6;
     /**
      * 【v1.14 关键修复】外层的"拉全屏"轮次间隔必须 **大于** 内层点击链跑完的时间。
      *
@@ -602,54 +644,69 @@ public class CallSessionManager {
                 CallDiag.log("接听", "拉起①失败（通知跳转）：" + e);
             }
         }
-        // ② 无障碍全局动作：把通知栏拉下来。
-        // 有些 ROM 上"通知栏展开"会让来电通知进入可交互状态，
-        // 也顺便给了用户一个可见入口（万一后面自动点击还是失败）。
-        try {
-            CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
-            if (svc != null && svc.openNotificationShade()) {
-                CallDiag.log("接听", "拉起②：已下拉通知栏（让来电通知可见/可交互）");
-            }
-        } catch (Exception e) {
-            CallDiag.log("接听", "拉起②失败（下拉通知栏）：" + e);
-        }
-        // ③ 启动微信
+        // 【v1.21 删除】这里原本有一招"下拉通知栏"，整段删除。原因：
+        //
+        // 全工程检索确认：**没有任何地方再把它收起来**（没有 GLOBAL_ACTION_BACK/HOME）。
+        // 而通知栏是系统级窗口，z-order 高于微信通话页，一旦拉下来就一直盖在屏幕上，
+        // 后续所有 dispatchGesture 物理坐标点击全部落在通知栏上。
+        // 日志会照常打印「已点击(坐标兜底)」「第 N/8 轮 → 尝试点击接听键」，
+        // 一通电话点到第 8 轮还是接不上，而且从日志完全看不出问题出在这。
+        //
+        // 它声称的好处（"让来电通知进入可交互状态"）在第①招成功时根本用不上，
+        // 而第①招失败的两种情况恰恰是它最常触发的时候：
+        //   · 会话由无障碍通道创建（openIntent == null）→ 直接跳过①走到它
+        //   · PendingIntent.send() 被 ROM 忽略或已被消费
+        // 于是一个看似无害的兜底动作，反而制造了必然后果。
+        // 现在只保留"把通话页顶起来"的手段，不做任何会长期改变屏幕层叠状态的动作。
+
+        CallHelperAccessibilityService svc0 = CallHelperAccessibilityService.get();
+        boolean weChatFront = svc0 != null && svc0.isWeChatForeground();
+
+        // ② 启动微信
         try {
             Intent i = sApp.getPackageManager().getLaunchIntentForPackage("com.tencent.mm");
             if (i == null) {
-                CallDiag.log("接听", "拉起③失败：拿不到微信的启动入口");
+                CallDiag.log("接听", "拉起②失败：拿不到微信的启动入口");
+            } else if (weChatFront) {
+                // 微信已在前台就别再重开它的任务栈：
+                // FLAG_ACTIVITY_RESET_TASK_IF_NEEDED 会重置任务栈，
+                // 有可能把已经存在的来电页压回后台，等于帮倒忙。
+                CallDiag.log("接听", "拉起②跳过：微信已经在前台，不再重开它的任务栈"
+                        + "（避免把来电页又压回后台）");
             } else {
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
                 sApp.startActivity(i);
-                CallDiag.log("接听", "拉起③：已启动微信，期望它把来电页顶到最前");
+                CallDiag.log("接听", "拉起②：已启动微信，期望它把来电页顶到最前");
             }
         } catch (Exception e) {
-            CallDiag.log("接听", "拉起③失败（启动微信）：" + e);
+            CallDiag.log("接听", "拉起②失败（启动微信）：" + e);
         }
 
-        // ④ 【v1.18 新增】点一下屏幕顶部那条来电横幅。
+        // ③ 【v1.18 新增】点一下屏幕顶部那条来电横幅。
         //
         // 用户实测（图一）：来电时屏幕上只有**桌面顶部的一条微信横幅**
         // 「老婆 邀请你视频通话」，微信并没有自己弹成全屏。
         // 这种横幅是系统通知横幅，**点它就会打开微信通话页** —— 这是最自然、
-        // 也最接近"老人自己会做的动作"的方式。旧版本只会发通知 PendingIntent，
-        // 但那个 intent 在部分 ROM 上被系统忽略，于是整通电话都停在这一步。
+        // 也最接近"老人自己会做的动作"的方式。
         //
-        // 位置：横跨屏幕宽度、紧贴状态栏下方的一块。点其水平中点最保险
-        // （避开右侧可能存在的"展开/收起"小箭头）。
-        try {
-            int[] sc = screenSizeForPull();
-            if (sc[0] > 0) {
-                int y = bannerTapY(sc[1]);
-                int x = sc[0] / 2;
-                CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
-                if (svc != null && svc.tapAt(x, y)) {
-                    CallDiag.log("接听", "拉起④：已点屏幕顶部横幅 ("
-                            + x + "," + y + ")，期望它把微信通话页带出来");
+        // 【v1.21】必须加"微信不在前台"的前置条件：微信若已在前台
+        // （例如整页自绘的全屏来电页），屏幕顶部那一带压着的很可能就是状态栏，
+        // 在那里点一下会把**系统通知栏拉下来** —— 又绕回上面那段删掉的坑里。
+        if (!weChatFront) {
+            try {
+                int[] sc = Screen.realSize(sApp);
+                if (sc[0] > 0) {
+                    int y = bannerTapY(sApp, sc[1]);
+                    int x = sc[0] / 2;
+                    CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+                    if (svc != null && svc.tapAt(x, y)) {
+                        CallDiag.log("接听", "拉起③：已点屏幕顶部横幅 ("
+                                + x + "," + y + ")，期望它把微信通话页带出来");
+                    }
                 }
+            } catch (Exception e) {
+                CallDiag.log("接听", "拉起③失败（点横幅）：" + e);
             }
-        } catch (Exception e) {
-            CallDiag.log("接听", "拉起④失败（点横幅）：" + e);
         }
     }
 
@@ -659,26 +716,31 @@ public class CallSessionManager {
      * 实测机型（1220×2712 / 密度 3.25）：横幅在状态栏下方、大约 150~420px 之间。
      * 这里取状态栏再往下一点的位置（约屏高 6%），保证落在横幅内部，
      * 而不是点进状态栏（那里会下拉通知栏）。
+     *
+     * 【v1.21】上下界以前写死 150px / 420px —— 这两个数是**在本机上量的**，
+     * 换一台小屏机（比如 720×1280）横幅就在 60~180px，硬套 150 已经贴到横幅下边缘，
+     * 再小就直接点到状态栏去了。现在改成随屏幕高度缩放：
+     *   · 下界 = max(46dp, 状态栏高度 + 12dp)：一定在状态栏下方
+     *   · 上界 = 屏高 × 15.5%
+     * 在本机（密度 3.25）上算出来仍是 150 / 420，行为完全不变；其它机型则自适应。
      */
-    private static int bannerTapY(int screenH) {
+    private static int bannerTapY(Context ctx, int screenH) {
         int y = Math.round(screenH * 0.06f);
-        if (y < 150) y = 150;
-        if (y > 420) y = 420;
+        int lo = Math.max(Screen.dp(ctx, 46), statusBarHeight(ctx) + Screen.dp(ctx, 12));
+        int hi = Math.round(screenH * 0.155f);
+        if (hi < lo) hi = lo;
+        if (y < lo) y = lo;
+        if (y > hi) y = hi;
         return y;
     }
 
-    private static int[] screenSizeForPull() {
-        if (sApp == null) return new int[]{0, 0};
+    /** 状态栏高度（像素），取不到返回 0 */
+    private static int statusBarHeight(Context ctx) {
         try {
-            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
-            android.view.WindowManager wm = (android.view.WindowManager)
-                    sApp.getSystemService(Context.WINDOW_SERVICE);
-            if (wm == null) return new int[]{0, 0};
-            wm.getDefaultDisplay().getRealMetrics(dm);
-            return new int[]{dm.widthPixels, dm.heightPixels};
-        } catch (Exception e) {
-            return new int[]{0, 0};
-        }
+            int id = ctx.getResources().getIdentifier("status_bar_height", "dimen", "android");
+            if (id > 0) return ctx.getResources().getDimensionPixelSize(id);
+        } catch (Throwable ignore) {}
+        return 0;
     }
 
     private static String uiStateName(int st) {
@@ -694,8 +756,22 @@ public class CallSessionManager {
         markAnswered("无障碍看到微信通话中界面", ctx);
     }
 
-    /** 微信通知显示「已取消/已结束」或界面显示通话结束时 */
+    /**
+     * 微信通知显示「已取消/已结束」或界面显示通话结束时。
+     *
+     * 【v1.21】这里以前是"说结束就立刻结束"，完全不过 verdict 闸门。
+     * 可这条路径的触发条件只是一句文本：聊天消息通知里出现
+     * 「通话」+「已取消/已结束」字样（END_KEYS 就是这么配的）就会被判成来电结束。
+     * 于是**别人发来一条提到电话的普通消息**，就能把正在响铃的会话掐掉。
+     * 现在跟其它两条路径一样先过 allowEndOnWeakEvidence —— 接听流程没跑完时疑罪从无。
+     */
     public static synchronized void onWeChatCallEnded(Context ctx, String reason) {
+        Session s = sSession;
+        if (s != null && !s.ended && !s.answered && !allowEndOnWeakEvidence(s)) {
+            CallDiag.log("会话", "收到结束类信号「" + reason + "」，但接听流程正在进行"
+                    + " → 疑罪从无，暂不结束，等界面自己给出更硬的结论");
+            return;
+        }
         markEnded("来电已结束（" + reason + "）", ctx);
     }
 
@@ -759,9 +835,16 @@ public class CallSessionManager {
                         + (s.autoAnswer ? "（自动接听流程不受影响）" : ""));
                 return;
             }
-            // 界面也不再响铃：可能确实结束了。
-            // 【v1.20】但"读不到"和"真的挂了"在自绘界面上长得一模一样，
-            // 一定要先过 allowEndOnWeakEvidence 这道闸，
+            // 界面也不再响铃：可能确实结束了，也可能只是又一次"读不到"。
+            // 【v1.21】先把这两种情况分开。微信仍在前台却一个字都读不到，
+            // 说明只是整页自绘，此刻根本没有资格判断"对方挂没挂" —— 强判必然误杀。
+            if (svc != null && svc.isWeChatForeground() && !svc.canReadUiText()) {
+                CallDiag.log("会话", "通知消失了，但微信仍在前台且界面完全读不到内容"
+                        + "（整页自绘）→ 无法区分「仍在响铃」与「已挂断」，本次不下结论");
+                s.goneTicks = 0;
+                return;
+            }
+            // 【v1.20】最终仍要过 allowEndOnWeakEvidence 这道闸，
             // 否则会在点击链跑到一半时把整个会话掐掉（详见该方法的说明）。
             if (!allowEndOnWeakEvidence(s)) return;
             markEnded("微信来电通知与界面均已消失（挂断/已取消）", sApp);
@@ -777,7 +860,7 @@ public class CallSessionManager {
         Session s = sSession;
         if (s != null && !s.ended) {
             s.stoppedByUser = true;
-            CallDiag.log("会话", "用户点了「停止提醒」→ 立即停掉语音、铃声与震动");
+            CallDiag.log("会话", "用户点了「停止提醒」→ 立即停掉语音播报与震动");
         } else {
             CallDiag.log("会话", "收到「停止提醒」，但没有进行中的会话（只做一次彻底清理）");
         }
@@ -880,7 +963,12 @@ public class CallSessionManager {
                 //   ③ 浮层浮在微信上面，会干扰"微信是否在前台"的判定
                 //      ——那是 v1.18 刚修好的老毛病，等于又被这一行请回来。
                 // 所以：用户不要浮层时，这里安静地什么都不做。
+                // 【v1.21 补全】这里漏了总开关 PREF_KEY：只关总开关、细分开关仍开着时，
+                // isVoiceOnly() 为 false，于是上面那道闸拦不住，
+                // 每 1.5 秒调一次 show()，而 show() 第一行就被 isEnabled 挡回来 ——
+                // 浮层永远画不出来，日志却一直在刷"指引圈不见了 → 重新画上"。
                 boolean guideWanted = sApp != null
+                        && GuideOverlay.isEnabled(sApp)
                         && !GuideOverlay.isVoiceOnly(sApp)
                         && GuideOverlay.canOverlay(sApp);
                 if (!guideWanted) {
@@ -891,8 +979,15 @@ public class CallSessionManager {
                             + (s.handled ? "（自动接听进行中，仍然画圈以便手动兜底）" : ""));
                     if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer,
                             s.autoAnswer ? s.autoAnswerAt : 0L);
-                } else if (!GuideOverlay.showingRing()) {
-                    CallDiag.log("提醒", "全屏来电界面仍在，但指引圈不见了 → 重新画上");
+                } else if (!GuideOverlay.isShowing()) {
+                    // 【v1.21】这里原来是 showingRing()。语义错了：
+                    // showingRing() = 浮层在 **且** 绿圈也在。用户在设置里关掉"绿圈"
+                    // 但留着"顶部提示/停止按钮"时，sRingShown 恒为 false，
+                    // 于是每 1.5 秒都认为"圈不见了"而走一次 show() ——
+                    // 而 show() 的第一行就是 hide()：removeView×2 + new View + addView×2，
+                    // 浮层每秒被拆了重建一次，既抖又白耗电。
+                    // 这里真正要问的是"浮层还在不在"，就应该是 isShowing()。
+                    CallDiag.log("提醒", "全屏来电界面仍在，但屏幕指引不见了 → 重新画上");
                     if (sApp != null) GuideOverlay.show(sApp, s.displayName, s.autoAnswer,
                             s.autoAnswer ? s.autoAnswerAt : 0L);
                 }
@@ -908,11 +1003,10 @@ public class CallSessionManager {
                 return;
             }
 
-            // 有语音播报就不要铃声（语音引擎可能刚刚才加载好）
-            if (sRingtone != null && TtsSpeaker.isUsable()) {
-                stopRingtone();
-                CallDiag.log("提醒", "语音引擎已就绪 → 停掉兜底铃声");
-            }
+        // 【v1.21】删掉了整条铃声兜底链路：startRingtone() 已经没有任何调用点
+        // （用户明确要求「不要加铃声，微信自己会响」），而 sRingtone 一旦被赋值就再
+        // 也不会被释放的路径也一并消失。留着一个没用的 MediaPlayer 静态字段，
+        // 只会让"资源有没有泄漏"这件事永远说不清。
 
             // 微信来电界面从屏幕上消失了：对方挂断、已接听、或老人自己处理了。
             // 连续 3 次（约 4.5 秒）确认，避免界面切换的瞬间误判。
@@ -953,9 +1047,24 @@ public class CallSessionManager {
 
     private static boolean allowEndOnWeakEvidence(Session s) {
         if (s == null || s.ended || s.answered) return false;
-        if (s.handled && s.weakEvidenceTicks < MAX_UNCERTAIN_GRACE) {
+        long now = System.currentTimeMillis();
+        // 【v1.21】这里以前只看 s.handled —— 而 handled 是 performAccept() 才置位的，
+        // 也就是要等用户配的那个延时（默认 8 秒）走完才算"流程在进行"。
+        // 于是**倒计时还没到点之前这一段时间是裸奔的**，而这恰恰是微信最容易
+        // 移除通知的时刻（拉起全屏通话页会顺手清掉响铃通知）：
+        //   t=0.0s 通知到达 → startCall → sAutoRun 排在 8 秒后，此时 handled=false
+        //   t=0.5s 微信移除旧通知 → onWeChatCallNotificationGone → 排 sNotifyGoneConfirm
+        //   t=3.0s 自绘界面读不到 → allowEndOnWeakEvidence 返回 true → markEnded
+        //         → cleanup() 把还没排队的 sAutoRun 一起撤销
+        // 结果：**自动接听永远不会触发**，日志里却只有一句
+        // 「微信来电通知与界面均已消失」，看起来完全正常。
+        // 这就是「有时候能接、有时候死活不接」最难查的那一部分。
+        // 现在把"自动接听还没到点（或刚开始跑）"也算作流程正在进行。
+        boolean pending = s.handled
+                || (s.autoAnswer && now < s.autoAnswerAt + MAX_UNCERTAIN_GRACE_MS);
+        if (pending && s.weakEvidenceTicks < MAX_UNCERTAIN_GRACE) {
             s.weakEvidenceTicks++;
-            CallDiag.log("会话", "界面/通知都读不到了，但自动接听流程仍在进行"
+            CallDiag.log("会话", "界面/通知都读不到了，但自动接听仍在倒计时或进行中"
                     + "（微信整页自绘时读不到是常态，不等于对方挂断）"
                     + " → 第 " + s.weakEvidenceTicks + "/" + MAX_UNCERTAIN_GRACE
                     + " 次宽限，不判结束");
@@ -963,6 +1072,9 @@ public class CallSessionManager {
         }
         return true;
     }
+
+    /** 自动接听从"到点"算起，还会再保护这么久（覆盖整轮点击链） */
+    private static final long MAX_UNCERTAIN_GRACE_MS = 60_000L;
 
     private static final Runnable sTimeout = new Runnable() {
         @Override
@@ -1035,9 +1147,36 @@ public class CallSessionManager {
         // 现在失败后每 RETRY_AFTER_FAIL_MS 重试一次，直到接通/挂断/超时。
         sHandler.removeCallbacks(sRetryAccept);
         sHandler.postDelayed(sRetryAccept, RETRY_AFTER_FAIL_MS);
+        // 【v1.21】连同时间预算一起顺延，否则这一轮重试会被硬超时在半路掐死。
+        extendTimeout(RETRY_AFTER_FAIL_MS
+                + (long) MAX_PULL_ATTEMPTS * (CLICK_CHAIN_BUDGET_MS + PULL_INTERVAL_MS));
 
         sHandler.removeCallbacks(sAnnounceLoop);
         sHandler.postDelayed(sAnnounceLoop, ANNOUNCE_INTERVAL_MS);
+    }
+
+    /**
+     * 【v1.21】"还有活要干"时把会话硬超时往后顺延。
+     *
+     * 各级预算的乘积远大于 HARD_TIMEOUT_MS：一轮最多 11 秒 + 间隔 1.5 秒，
+     * 6 轮就是 75 秒，失败后还会再重试 —— 固定 120 秒必然在某个重试跑到一半时到期，
+     * cleanup() 一撤销就前功尽弃，日志里表现为"没有任何后续尝试"。
+     * 现在每次决定要再试一轮，就把截止时间相应地往后推。
+     *
+     * 上限仍然要有（防止铃声/会话永久挂着）：MAX_TIMEOUT_MS。
+     */
+    private static final long MAX_TIMEOUT_MS = 300_000L;
+
+    private static void extendTimeout(long extraMs) {
+        Session s = sSession;
+        if (s == null) return;
+        long elapsed = System.currentTimeMillis() - s.startAt;
+        long wantMs = Math.min(MAX_TIMEOUT_MS, elapsed + extraMs);
+        long delay = Math.max(0L, wantMs - elapsed);
+        sHandler.removeCallbacks(sTimeout);
+        sHandler.postDelayed(sTimeout, delay);
+        CallDiag.log("会话", "还有重试要跑 → 会话截止时间顺延到开始后 "
+                + (wantMs / 1000) + " 秒");
     }
 
     /** 自动接听失败后的重试间隔 */
@@ -1074,7 +1213,7 @@ public class CallSessionManager {
         if (s == null || s.ended) return;
         s.answered = true;
         sLastAnsweredAt = System.currentTimeMillis();
-        CallDiag.log("会话", "通话已接通（" + reason + "）→ 停止播报与铃声");
+        CallDiag.log("会话", "通话已接通（" + reason + "）→ 停止语音播报与震动");
         cleanup(ctx != null ? ctx.getApplicationContext() : sApp);
     }
 
@@ -1131,7 +1270,6 @@ public class CallSessionManager {
     private static void announce() {
         Session s = sSession;
         if (s == null || s.ended || s.answered) return;
-        if (sRingtone != null) stopRingtone(); // 本版本不再使用铃声（见 waitForTtsThenMaybeRingtone）
 
         long remain = (s.autoAnswerAt - System.currentTimeMillis()) / 1000L + 1;
         // 先看当前是全屏界面还是只有通知：两种情况下老人该做的动作不一样，
@@ -1225,7 +1363,14 @@ public class CallSessionManager {
             b.addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止提醒", stopPi);
 
             nm.notify(CALL_NOTIFY_ID, b.build());
-        } catch (Exception ignore) {}
+        } catch (Throwable t) {
+            // 【v1.21】这里以前是 catch(Exception ignore) —— 而这条通知是**唯一的拉起方式**：
+            // setFullScreenIntent 负责把微信通话页从后台拽到前台。它一旦失败（厂商限制、
+            // 通知权限被收、PendingIntent 参数不合规），后面所有"点接听键"的尝试
+            // 都会因为微信不在前台而失败，日志里却一个字都没有 ——
+            // 这正是那种"看着一直在重试，其实一次都没点出去"的现象。
+            CallDiag.log("会话", "发出来电提醒通知失败（这一步失败会导致无法把微信拉到前台）：" + t);
+        }
     }
 
     private static void cancelNotification() {
@@ -1252,44 +1397,6 @@ public class CallSessionManager {
         } catch (Exception ignore) {}
     }
 
-    /** 语音不可用时的兜底：循环响系统铃声 */
-    private static void startRingtone(Context app) {
-        if (sRingtone != null || app == null) return;
-        try {
-            Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-            if (uri == null) return;
-            MediaPlayer mp = new MediaPlayer();
-            mp.setDataSource(app, uri);
-            if (Build.VERSION.SDK_INT >= 21) {
-                mp.setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build());
-            } else {
-                mp.setAudioStreamType(android.media.AudioManager.STREAM_RING);
-            }
-            mp.setLooping(true);
-            mp.prepare();
-            mp.start();
-            sRingtone = mp;
-        } catch (Exception e) {
-            CallDiag.log("提醒", "铃声播放失败：" + e);
-            sRingtone = null;
-        }
-    }
-
-    private static void stopRingtone() {
-        MediaPlayer mp = sRingtone;
-        sRingtone = null;
-        if (mp == null) return;
-        try {
-            if (mp.isPlaying()) mp.stop();
-        } catch (Exception ignore) {}
-        try {
-            mp.release();
-        } catch (Exception ignore) {}
-    }
-
     private static void acquireWakeLock(Context app) {
         try {
             PowerManager pm = (PowerManager) app.getSystemService(Context.POWER_SERVICE);
@@ -1299,21 +1406,34 @@ public class CallSessionManager {
                 sWakeLock = null;
             }
             sWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "callhelper:ringing");
-            sWakeLock.acquire(200_000L);
+            // 【v1.21】以前这里硬写 200 秒，和真正的会话预算没有任何关系：
+            // extendTimeout() 可以把硬超时延到 MAX_TIMEOUT_MS（300 秒），
+            // 于是"锁只到 200 秒、状态机却还在跑到 300 秒"——最后 100 秒是在
+            // 持锁失效的状态下硬撑，日志能把人看晕。现在改成跟着上限走，
+            // 再多给 5 秒让收尾一定跑得完。
+            sWakeLock.acquire(MAX_TIMEOUT_MS + 5_000L);
         } catch (Exception ignore) {}
     }
 
     private static void stopSoundsAndVibration() {
         TtsSpeaker.stop();
-        stopRingtone();
         if (sVibrator != null) {
             try { sVibrator.cancel(); } catch (Exception ignore) {}
             sVibrator = null;
         }
     }
 
-    /** 结束一次会话：停掉一切声音与界面，并撤销所有排队中的定时任务 */
-    private static void cleanup(Context app) {
+    /**
+     * 结束一次会话：停掉一切声音与界面，并撤销所有排队中的定时任务。
+     *
+     * 【v1.21 加 synchronized】收尾会同时操作多条共享资源（唤醒锁、震动器、
+     * 八个定时任务、当前会话对象）。这些入口不在一个线程上：
+     * 通知监听的回调、无障碍服务的回调、以及用户点「停止提醒」的广播，
+     * 都可能几乎同时调到 markEnded / markAnswered → 最终都汇聚到这里。
+     * 以前不加锁时，两个线程同时收尾会出现"谁先把 sWakeLock 置空、
+     * 另一个就再也没释放掉"这类只泄漏、不崩溃的问题。
+     */
+    private static synchronized void cleanup(Context app) {
         Session cur = sSession;
         if (cur != null) {
             cur.ended = true;

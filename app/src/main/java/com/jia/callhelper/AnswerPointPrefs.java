@@ -76,7 +76,7 @@ public final class AnswerPointPrefs {
         android.content.SharedPreferences p = WhiteListManager.prefs(ctx);
         // 【v1.20 关键修复】这里以前直接读三个 KEY_*，完全绕过了代次检查。
         // 后果：老用户机器上有上一代的校准值（存着当年那个偏了 138px 的坐标），
-        // 升级到修正过默认值的新版之后 —— isCustomized() 虽然把<｜hy_place▁holder▁no▁813｜> KEY_CUSTOM
+        // 升级到修正过默认值的新版之后 —— isCustomized() 虽然把 KEY_CUSTOM
         // 置回 false，但 KEY_X/KEY_BOTTOM/KEY_RADIUS 三个浮点值还原封不动躺在
         // SharedPreferences 里，于是这里照旧把它们读出来用。
         // 表现就是：**改了默认值，用户机器上纹丝不动，圈还是歪的**

@@ -24,6 +24,56 @@ public class WhiteListManager {
         return ctx.getSharedPreferences("call_helper", Context.MODE_PRIVATE);
     }
 
+    // ---------------- 两个总开关 ----------------
+
+    /**
+     * 【v1.22】整个 App 核心功能的总开关，默认**开启**。
+     *
+     * 用户要求："要添加一个功能，就是控制整个 app 核心功能的总开关。"
+     * 关掉之后要做到：不监听微信通知、不扫描微信界面、不播报、不画绿圈、不自动接听。
+     * 实现上是在两条入口的最前面各加一道闸（见 WeChatCallListenerService.handle
+     * 与 CallHelperAccessibilityService.onAccessibilityEvent），而不是在会话里到处加判断 ——
+     * 那样总会漏一个角落，最后变成"关了却还在响"。
+     */
+    private static final String KEY_APP_ENABLED = "app_enabled";
+
+    /** 【v1.22】是否只响应名单里的家人；名单外来电一律不做任何操作（详见 startCall） */
+    private static final String KEY_ONLY_WHITELIST = "only_whitelist";
+
+    /**
+     * 【v1.22】这个开关会在**每一个微信无障碍事件**上被问一次 ——
+     * 微信一分钟能抛上百个事件，而 SharedPreferences 的读是一次 IPC。
+     * 所以这里做 3 秒缓存：最坏情况是用户拨动开关后 3 秒才彻底生效，完全可接受。
+     */
+    private static final long APP_ENABLED_TTL_MS = 3000L;
+    private static volatile boolean sAppEnabledCache = true;
+    private static volatile long sAppEnabledAt = 0L;
+
+    public static boolean isAppEnabled(Context ctx) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - sAppEnabledAt < APP_ENABLED_TTL_MS) return sAppEnabledCache;
+        sAppEnabledCache = prefs(ctx).getBoolean(KEY_APP_ENABLED, true);
+        sAppEnabledAt = now;
+        return sAppEnabledCache;
+    }
+
+    public static void setAppEnabled(Context ctx, boolean v) {
+        prefs(ctx).edit().putBoolean(KEY_APP_ENABLED, v).apply();
+        // 立刻失效：用户按下开关的那一刻就该生效，别等缓存过期
+        sAppEnabledAt = 0L;
+        CallDiag.log("设置", "总开关已" + (v ? "开启" : "关闭")
+                + (v ? "：恢复监听微信来电。" : "：停止监听微信来电、播报、屏幕指引与自动接听。"));
+    }
+
+    /** 名单外的人来电时是否完全不理会。默认 true —— 这正是用户要的行为 */
+    public static boolean isOnlyWhitelist(Context ctx) {
+        return prefs(ctx).getBoolean(KEY_ONLY_WHITELIST, true);
+    }
+
+    public static void setOnlyWhitelist(Context ctx, boolean v) {
+        prefs(ctx).edit().putBoolean(KEY_ONLY_WHITELIST, v).apply();
+    }
+
     public static List<Entry> load(Context ctx) {
         List<Entry> list = new ArrayList<Entry>();
         Map<String, ?> all = prefs(ctx).getAll();
@@ -43,9 +93,24 @@ public class WhiteListManager {
         return list;
     }
 
+    /**
+     * 新增一位家人。key 用时间戳，但会先确认没被占用。
+     *
+     * 【v1.21】以前直接 `"wl_" + currentTimeMillis()`。同一毫秒内连点两次「添加」
+     * （老人手势慢但也可能连按，或者设置页被快速回填）会生成同一个 key，
+     * 后一条把前一条静默覆盖掉 —— 用户看到的现象是"我明明加了两个人，列表里只有一个"。
+     * 时间戳天然不保证唯一，这里补一道占用检查。
+     */
     public static void add(Context ctx, String name, String number, boolean auto) {
-        String key = "wl_" + System.currentTimeMillis();
-        prefs(ctx).edit().putString(key,
+        SharedPreferences p = prefs(ctx);
+        String key;
+        long base = System.currentTimeMillis();
+        int n = 0;
+        do {
+            key = "wl_" + (base + n);
+            n++;
+        } while (p.contains(key) && n < 100);
+        p.edit().putString(key,
                 name + "|" + (number == null ? "" : number) + "|" + (auto ? "1" : "0")).apply();
     }
 

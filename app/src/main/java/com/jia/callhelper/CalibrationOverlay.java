@@ -12,7 +12,6 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
-import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -50,10 +49,10 @@ public final class CalibrationOverlay {
     /** 校准最多显示多久：防止用户忘了关，绿圈一直挂在屏幕上 */
     private static final long AUTO_HIDE_MS = 5 * 60 * 1000L;
 
-    private static WindowManager sWm;
-    private static RingLayer sLayer;   // 绘制层（不接收触摸）
-    private static View sGrip;         // 圆圈左边的拖动把手（唯一接收拖动的地方）
-    private static View sBar;          // 顶部工具栏
+    private static volatile WindowManager sWm;
+    private static volatile RingLayer sLayer;   // 绘制层（不接收触摸）
+    private static volatile View sGrip;         // 圆圈左边的拖动把手（唯一接收拖动的地方）
+    private static volatile View sBar;          // 顶部工具栏
     private static int sScreenW, sScreenH;
     private static int sGripSize;
     /** 当前圆圈：{中心X, 中心Y, 半径}，三个窗口共用同一份数据 */
@@ -82,14 +81,14 @@ public final class CalibrationOverlay {
         }
         hide();
 
-        int[] size = screenSize(app);
+        int[] size = Screen.realSize(app);
         sScreenW = size[0];
         sScreenH = size[1];
         if (sScreenW <= 0 || sScreenH <= 0) {
             Toast.makeText(app, "读不到屏幕尺寸，无法校准", Toast.LENGTH_SHORT).show();
             return;
         }
-        sGripSize = dp(app, 72);
+        sGripSize = Screen.dp(app, 72);
 
         int[] p = AnswerPointPrefs.point(app, sScreenW, sScreenH);
         sPos[0] = p[0];
@@ -141,7 +140,7 @@ public final class CalibrationOverlay {
                             | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT);
             lp3.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-            lp3.y = dp(app, 34);
+            lp3.y = Screen.dp(app, 34);
             sWm.addView(sBar, lp3);
 
             sShowing = true;
@@ -237,7 +236,7 @@ public final class CalibrationOverlay {
         try {
             WindowManager.LayoutParams lp =
                     (WindowManager.LayoutParams) sGrip.getLayoutParams();
-            int gx = sPos[0] - Math.round(sPos[2] * 1.15f) - sGripSize / 2 - dp(ctx, 14);
+            int gx = sPos[0] - Math.round(sPos[2] * 1.15f) - sGripSize / 2 - Screen.dp(ctx, 14);
             int half = sGripSize / 2;
             gx = clamp(gx, half, Math.max(half, sScreenW - half));
             int gy = clamp(sPos[1], half, Math.max(half, sScreenH - half));
@@ -285,15 +284,15 @@ public final class CalibrationOverlay {
         box.setGravity(Gravity.CENTER_HORIZONTAL);
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(0xEE222222);
-        bg.setCornerRadius(dp(ctx, 14));
+        bg.setCornerRadius(Screen.dp(ctx, 14));
         box.setBackground(bg);
-        box.setPadding(dp(ctx, 10), dp(ctx, 8), dp(ctx, 10), dp(ctx, 8));
+        box.setPadding(Screen.dp(ctx, 10), Screen.dp(ctx, 8), Screen.dp(ctx, 10), Screen.dp(ctx, 8));
 
         TextView title = new TextView(ctx);
         title.setText("把绿圈套到微信的接听按钮上");
         title.setTextColor(0xFFFFFFFF);
         title.setTextSize(15);
-        title.setPadding(0, 0, 0, dp(ctx, 4));
+        title.setPadding(0, 0, 0, Screen.dp(ctx, 4));
         box.addView(title);
 
         // 【v1.18】把"圈心是不是真在按钮里"做成一条客观判据：
@@ -303,7 +302,7 @@ public final class CalibrationOverlay {
         hint.setText("对准标志：让绿色按钮中间的白色电话图标落在圈的正中心");
         hint.setTextColor(0xFFB2FFB2);
         hint.setTextSize(13);
-        hint.setPadding(0, 0, 0, dp(ctx, 6));
+        hint.setPadding(0, 0, 0, Screen.dp(ctx, 6));
         box.addView(hint);
 
         int step = Math.max(4, Math.round(sScreenW * 0.005f));
@@ -334,7 +333,7 @@ public final class CalibrationOverlay {
     private static View sizeRow(final Context ctx) {
         LinearLayout row = new LinearLayout(ctx);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(ctx, 6), 0, 0);
+        row.setPadding(0, Screen.dp(ctx, 6), 0, 0);
         final int dr = Math.max(2, Math.round(sScreenW * 0.004f));
         row.addView(miniBtn(ctx, "圈大 +", new View.OnClickListener() {
             @Override public void onClick(View v) { resizeBy(ctx, dr); }
@@ -348,7 +347,7 @@ public final class CalibrationOverlay {
     private static View actionRow(final Context ctx) {
         LinearLayout row = new LinearLayout(ctx);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(ctx, 8), 0, 0);
+        row.setPadding(0, Screen.dp(ctx, 8), 0, 0);
         row.addView(miniBtn(ctx, "✓ 保存这个位置", 0xFF1B7F3B, new View.OnClickListener() {
             @Override public void onClick(View v) { save(v.getContext()); }
         }));
@@ -400,15 +399,15 @@ public final class CalibrationOverlay {
         b.setTextSize(16);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setGravity(Gravity.CENTER);
-        b.setPadding(dp(ctx, 14), dp(ctx, 9), dp(ctx, 14), dp(ctx, 9));
+        b.setPadding(Screen.dp(ctx, 14), Screen.dp(ctx, 9), Screen.dp(ctx, 14), Screen.dp(ctx, 9));
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(color);
-        bg.setCornerRadius(dp(ctx, 10));
+        bg.setCornerRadius(Screen.dp(ctx, 10));
         b.setBackground(bg);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(dp(ctx, 4), 0, dp(ctx, 4), 0);
+        lp.setMargins(Screen.dp(ctx, 4), 0, Screen.dp(ctx, 4), 0);
         b.setLayoutParams(lp);
         b.setOnClickListener(l);
         return b;
@@ -495,20 +494,5 @@ public final class CalibrationOverlay {
         return v < lo ? lo : (v > hi ? hi : v);
     }
 
-    private static int dp(Context ctx, int v) {
-        return Math.round(v * ctx.getResources().getDisplayMetrics().density);
-    }
-
-    /** 物理屏幕尺寸（含导航栏区域）：和自动点击用的是同一套坐标基准 */
-    private static int[] screenSize(Context ctx) {
-        try {
-            DisplayMetrics dm = new DisplayMetrics();
-            WindowManager wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
-            if (wm == null) return new int[]{0, 0};
-            wm.getDefaultDisplay().getRealMetrics(dm);
-            return new int[]{dm.widthPixels, dm.heightPixels};
-        } catch (Exception e) {
-            return new int[]{0, 0};
-        }
-    }
+    // dp 换算和屏幕尺寸统一走 Screen，保证「画的圈」和「点的坐标」同一个基准。
 }

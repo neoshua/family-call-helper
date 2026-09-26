@@ -17,7 +17,8 @@ import java.util.Locale;
 /**
  * 语音播报（TTS）单例。
  * - 播报时自动把媒体音量临时调高到 85%，播完恢复，确保老人听得到
- * - 中文 TTS 不可用时，上层会回退为循环响铃
+ * - 中文 TTS 不可用时**没有**替代铃声：本应用刻意不播放铃声（微信来电自己会响），
+ *   所以这一步失败就是「听不到播报」，上层照常自动接听即可，不要再补别的声音
  *
  * 关于「明明装了引擎却提示没装」这个问题，本类做了四层防护：
  *
@@ -129,16 +130,21 @@ public final class TtsSpeaker {
         return sCandidates.size();
     }
 
-    /** 面向老人的一句话原因说明，供设置页/试听提示使用 */
+    /** 面向老人的一句话原因说明，供设置页/试听提示使用。
+     *
+     * 【v1.21】这里以前写的是「来电只能用铃声提醒」——本应用按用户要求早已不做铃声兜底
+     * （微信自己的来电铃声就是提醒），那段承诺是假的。真没语音时，将来电表现得
+     * 只有屏幕+微信自己的铃声，所以文案改成如实说明。
+     */
     public static String describeProblem() {
         switch (sState) {
             case STATE_NO_CHINESE:
-                return "手机的语音引擎没能读出中文，来电只能用铃声提醒。";
+                return "手机的语音引擎没能读出中文，来电时听不到「谁打来的」这句播报。";
             case STATE_INIT_FAILED:
-                return "本应用没能连上手机的语音引擎，来电只能用铃声提醒。";
+                return "本应用没能连上手机的语音引擎，来电时听不到语音播报。";
             case STATE_UNKNOWN:
             default:
-                return "语音引擎响应太慢，本次先用铃声提醒。";
+                return "语音引擎响应太慢，可能要等一下才会播出声。";
         }
     }
 
@@ -158,11 +164,12 @@ public final class TtsSpeaker {
     }
 
     /**
-     * 播报。引擎未就绪会先排队、就绪后自动补播；确认无引擎则丢弃（由上层回退响铃）。
+     * 播报。引擎未就绪会先排队、就绪后自动补播；
+     * 确认无引擎则直接丢弃（本应用不做铃声兜底，见类注释）。
      */
     public static synchronized void speak(String content) {
         if (sApp != null && sTts == null) init(sApp); // 兜底：尚未初始化则先初始化
-        if (sState == STATE_INIT_FAILED && sTts == null) return; // 确实没有引擎，交给上层响铃
+        if (sState == STATE_INIT_FAILED && sTts == null) return; // 确实没有引擎：这条路就是没声音
         if (sTts == null || !sInitDone) {
             sPending = content; // 引擎还在加载：先排队，onInit 里会补播
             return;

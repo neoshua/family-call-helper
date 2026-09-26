@@ -42,6 +42,36 @@ public final class GuideOverlay {
 
     /** 设置里的开关：来电时是否显示屏幕指引浮层（绿圈 + 顶部提示 + 停止提醒按钮） */
     public static final String PREF_KEY = "guide_overlay";
+
+    /**
+     * 【v1.21】重绘驱动。
+     *
+     * 以前是 GuideLayerView.onDraw() 自己调 postInvalidateDelayed(40) ——
+     * 于是这块 MATCH_PARENT 的全屏浮层**恒定以 25fps 画到来电结束**，
+     * 连"屏幕上其实只显示一行提示字"的情况也一样。每秒 25 次全屏 alpha 合成，
+     * 叠在微信通话页之上，是继无障碍遍历之后的第二大耗电源。
+     * 而它真正需要画的脉冲动画只在绿圈上，文字提示里的倒计时是**秒级**才变的。
+     *
+     * 现在由这里按内容分档驱动：画绿圈时 60ms（约 16fps，肉眼看不出差别），
+     * 只有文字时 1 秒一次。hide() 里彻底摘掉。
+     */
+    private static final android.os.Handler sUi =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+
+    private static final Runnable sTick = new Runnable() {
+        @Override
+        public void run() {
+            View v = sLayer;
+            if (!sShowing || v == null) return;
+            v.invalidate();
+            sUi.postDelayed(this, sRingShown ? 60L : 1000L);
+        }
+    };
+
+    private static void startTick() {
+        sUi.removeCallbacks(sTick);
+        sUi.post(sTick);
+    }
     /**
      * 【v1.18】细分开关：是否画那个绿色圆圈。
      *
@@ -57,14 +87,16 @@ public final class GuideOverlay {
     /** 是否显示「停止提醒」按钮（有些用户嫌它挡事） */
     public static final String PREF_STOPBAR_KEY = "guide_stopbar";
 
-    private static WindowManager sWm;
-    private static View sLayer;   // 指示层（不接收触摸）
-    private static View sStopBar; // 停止按钮（唯一可点击的地方）
+    private static volatile WindowManager sWm;
+    private static volatile View sLayer;   // 指示层（不接收触摸）
+    private static volatile View sStopBar; // 停止按钮（唯一可点击的地方）
     private static boolean sShowing;
     /** 本次是否真的画了"圈住接听键"的绿圈（不是全屏来电界面时只提示、不画圈） */
     private static boolean sRingShown;
     /** 当前这次显示的身份标记：用于「只隐藏自己那一次」，避免试听的定时隐藏误伤真实来电 */
     private static Object sToken;
+    /** 【v1.22】截屏期间临时收起浮层用的恢复任务（保证不会被叠加、也不会漏恢复） */
+    private static Runnable sShotRestore;
 
     private GuideOverlay() {}
 
@@ -209,6 +241,7 @@ public final class GuideOverlay {
                 sStopBar = null;
                 sShowing = true;
                 sToken = new Object();
+                startTick();
                 CallDiag.log("指引", "已按设置显示指引（不显示「停止提醒」按钮）"
                         + " 画圈=" + (fullScreen && drawRing) + " 提示文字=" + drawTip);
                 return;
@@ -223,11 +256,12 @@ public final class GuideOverlay {
                             | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT);
             lp2.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-            lp2.y = dp(app, 60);
+            lp2.y = Screen.dp(app, 60);
             sWm.addView(sStopBar, lp2);
 
             sShowing = true;
             sToken = new Object();
+            startTick();
             CallDiag.log("指引", (fullScreen && drawRing
                     ? "已在屏幕上圈出接听键：中心=(" + p[0] + "," + p[1] + ") 半径=" + p[2]
                     : (!drawRing ? "已显示来电提示（设置里关掉了绿圈，本次不画圆圈）"
@@ -275,6 +309,7 @@ public final class GuideOverlay {
 
     /** 来电结束 / 已接通 / 用户关掉提醒时移除浮层 */
     public static synchronized void hide() {
+        sUi.removeCallbacks(sTick);   // 浮层都没了，别再继续 invalidate
         if (sLayer == null && sStopBar == null && !sShowing) return;
         try {
             if (sLayer != null && sWm != null) sWm.removeViewImmediate(sLayer);
@@ -298,6 +333,37 @@ public final class GuideOverlay {
         return sShowing && sRingShown;
     }
 
+    /**
+     * 【v1.22】截屏期间临时把浮层藏起来（默认 300ms 后自动恢复）。
+     *
+     * <p>v1.22 起我们会"看一眼屏幕"，靠底色找出微信那个绿色圆钮；
+     * 而指引层画的**恰好也是一个绿圈**。它要是留在截图里，识别器认出来的
+     * 就是我们自己画的那圏，等于自己骗自己。
+     *
+     * <p>只藏 300 毫秒，人眼基本察觉不到；恢复任务做了去重，连续截图也不会漏恢复。
+     */
+    public static synchronized void suspendForShot(long hideMs) {
+        final View a = sLayer;
+        final View b = sStopBar;
+        if (a == null && b == null) return;
+        try {
+            if (a != null) a.setVisibility(View.GONE);
+            if (b != null) b.setVisibility(View.GONE);
+        } catch (Throwable ignore) {}
+        if (sShotRestore != null) sUi.removeCallbacks(sShotRestore);
+        sShotRestore = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // 期间可能已经 hide() 了：视图已经摘掉，再 setVisibility 也无害
+                    if (a != null) a.setVisibility(View.VISIBLE);
+                    if (b != null) b.setVisibility(View.VISIBLE);
+                } catch (Throwable ignore) {}
+            }
+        };
+        sUi.postDelayed(sShotRestore, hideMs);
+    }
+
     // ---------------- 停止按钮 ----------------
 
     private static View buildStopBar(Context ctx) {
@@ -311,10 +377,10 @@ public final class GuideOverlay {
         btn.setTextColor(Color.WHITE);
         btn.setTypeface(Typeface.DEFAULT_BOLD);
         btn.setGravity(Gravity.CENTER);
-        btn.setPadding(dp(ctx, 22), dp(ctx, 11), dp(ctx, 22), dp(ctx, 11));
+        btn.setPadding(Screen.dp(ctx, 22), Screen.dp(ctx, 11), Screen.dp(ctx, 22), Screen.dp(ctx, 11));
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(0xE6333333);
-        bg.setCornerRadius(dp(ctx, 24));
+        bg.setCornerRadius(Screen.dp(ctx, 24));
         btn.setBackground(bg);
         btn.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -329,7 +395,7 @@ public final class GuideOverlay {
         tip.setTextSize(12);
         tip.setTextColor(0xCCFFFFFF);
         tip.setGravity(Gravity.CENTER);
-        tip.setPadding(0, dp(ctx, 4), 0, 0);
+        tip.setPadding(0, Screen.dp(ctx, 4), 0, 0);
         box.addView(tip);
         return box;
     }
@@ -345,6 +411,18 @@ public final class GuideOverlay {
         private final Paint mArrow = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mTipBg = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mTipText = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        /** 【v1.21】下面这几个以前每次 onDraw 都 new 一遍。重绘是按帧来的，
+         *  25fps × 每帧 5 个对象 = 每秒一百多个短命对象，
+         *  在老人机上会稳定触发 minor GC。改成构造时建一次、每帧复用。 */
+        private final Path mArrowPath = new Path();
+        private final RectF mBox = new RectF();
+        private final RectF mTipBox = new RectF();
+        private final Paint.FontMetrics mLabelFm = new Paint.FontMetrics();
+        private final Paint.FontMetrics mTipFm = new Paint.FontMetrics();
+        /** 倒计时只在秒数变化时才重新拼字符串 */
+        private int mLastSec = -1;
+        private String mLine2Cache = "";
 
         private final float mCx, mCy, mR;
         private final String mCaller;
@@ -418,23 +496,23 @@ public final class GuideOverlay {
                 // 「点这里接听」标签 + 指向圆环的箭头
                 float arrowTipY = mCy - ringR - 8 * mDensity;
                 float arrowBaseY = arrowTipY - 38 * mDensity;
-                Path arrow = new Path();
-                arrow.moveTo(mCx, arrowTipY);
-                arrow.lineTo(mCx - 20 * mDensity, arrowBaseY);
-                arrow.lineTo(mCx + 20 * mDensity, arrowBaseY);
-                arrow.close();
-                canvas.drawPath(arrow, mArrow);
+                mArrowPath.rewind();
+                mArrowPath.moveTo(mCx, arrowTipY);
+                mArrowPath.lineTo(mCx - 20 * mDensity, arrowBaseY);
+                mArrowPath.lineTo(mCx + 20 * mDensity, arrowBaseY);
+                mArrowPath.close();
+                canvas.drawPath(mArrowPath, mArrow);
 
                 String label = "点这里接听";
                 float labelW = mLabelText.measureText(label) + 44 * mDensity;
                 float labelH = 52 * mDensity;
                 float labelBottom = arrowBaseY - 6 * mDensity;
-                RectF box = new RectF(mCx - labelW / 2, labelBottom - labelH,
+                mBox.set(mCx - labelW / 2, labelBottom - labelH,
                         mCx + labelW / 2, labelBottom);
                 float radius = labelH / 2;
-                canvas.drawRoundRect(box, radius, radius, mLabel);
-                Paint.FontMetrics fm = mLabelText.getFontMetrics();
-                float baseline = box.centerY() - (fm.ascent + fm.descent) / 2;
+                canvas.drawRoundRect(mBox, radius, radius, mLabel);
+                mLabelText.getFontMetrics(mLabelFm);
+                float baseline = mBox.centerY() - (mLabelFm.ascent + mLabelFm.descent) / 2;
                 canvas.drawText(label, mCx, baseline, mLabelText);
             }
 
@@ -443,7 +521,7 @@ public final class GuideOverlay {
             // 【v1.12】字号放大后改成「最多两行」绘制：第一行"谁打来的"，
             // 第二行"该怎么做"。字大 + 分行，远看也清楚。
             if (!mTipVisible) {
-                if (isAttachedToWindow()) postInvalidateDelayed(40L);
+                // 【v1.21】这里不再自己续帧：重绘由外面的 sTick 按内容分档驱动。
                 return;
             }
             float anchorX = mFullScreen ? mCx : getWidth() / 2f;
@@ -464,18 +542,16 @@ public final class GuideOverlay {
             if (left + tipW > getWidth() - 12 * mDensity) {
                 left = Math.max(12 * mDensity, getWidth() - 12 * mDensity - tipW);
             }
-            RectF tipBox = new RectF(left, tipTop, left + tipW, tipTop + tipH);
-            canvas.drawRoundRect(tipBox, 20 * mDensity, 20 * mDensity, mTipBg);
+            mTipBox.set(left, tipTop, left + tipW, tipTop + tipH);
+            canvas.drawRoundRect(mTipBox, 20 * mDensity, 20 * mDensity, mTipBg);
 
-            Paint.FontMetrics tfm = mTipText.getFontMetrics();
-            float firstBaseline = tipBox.top + 13 * mDensity - tfm.ascent;
-            canvas.drawText(line1, tipBox.centerX(), firstBaseline, mTipText);
+            mTipText.getFontMetrics(mTipFm);
+            float firstBaseline = mTipBox.top + 13 * mDensity - mTipFm.ascent;
+            canvas.drawText(line1, mTipBox.centerX(), firstBaseline, mTipText);
             if (!line2.isEmpty()) {
-                canvas.drawText(line2, tipBox.centerX(), firstBaseline + lineH, mTipText);
+                canvas.drawText(line2, mTipBox.centerX(), firstBaseline + lineH, mTipText);
             }
-
-            // 脉冲动画：每 40ms 重绘一帧（视图移除后自动停止）
-            if (isAttachedToWindow()) postInvalidateDelayed(40L);
+            // 【v1.21】脉冲动画的续帧由外面的 sTick 负责（60ms），这里不再自我循环。
         }
 
         /** 第一行：谁打来的（大号、最关键的一行） */
@@ -492,10 +568,13 @@ public final class GuideOverlay {
             if (mAuto) {
                 long remain = mAutoDeadlineAt - System.currentTimeMillis();
                 int sec = (int) Math.max(0, (remain + 999) / 1000);
-                if (mAutoDeadlineAt > 0 && sec > 0) {
-                    return "正在自动接听，还剩 " + sec + " 秒";
-                }
-                return "正在自动接听…";
+                // 【v1.21】倒计时是秒级变化的，没必要每一帧重新拼一遍字符串
+                if (sec == mLastSec && mLine2Cache.length() > 0) return mLine2Cache;
+                mLastSec = sec;
+                mLine2Cache = (mAutoDeadlineAt > 0 && sec > 0)
+                        ? ("正在自动接听，还剩 " + sec + " 秒")
+                        : "正在自动接听…";
+                return mLine2Cache;
             }
             return mFullScreen
                     ? "请点绿色圆圈里的按钮"
@@ -513,7 +592,4 @@ public final class GuideOverlay {
         }
     }
 
-    private static int dp(Context ctx, int v) {
-        return Math.round(v * ctx.getResources().getDisplayMetrics().density);
-    }
 }
