@@ -85,17 +85,30 @@ jobs:
 
       # 版本号统一在这里算一次，编译和发布共用同一个值，
       # 这样「App 里显示的版本号」与「下载的 APK 文件名」永远一致。
-      - name: 计算版本号 (1.x)
+      #
+      # 【v1.22 起改为读仓库里的 version.properties】
+      # 旧方案用 run_number - 8 推算次版本号，隐含假设"每次 push 都恰好对应一个新版本"。
+      # 这次翻车了：v1.21 的改动从未入库发布，等到 v1.22 一起提交时，
+      # run #29 被 29-8 推算成 v1.21 —— 和本地已经发过的 v1.21 包撞号，用户没法升级。
+      # 现在版本号由随代码一起提交的 version.properties 明确指定，
+      # 升版本 = 在同一个提交里改这个文件，不再依赖任何推算。
+      - name: 计算版本号
         run: |
-          # 主版本号 MAJOR：升到 2 时由人工把下面 MAJOR 改为 2，
-          # 并同步把 MINOR_BASE 设为当时构建号，使次版本从 1 重新开始（如 2.1）。
-          MAJOR=1
-          MINOR_BASE=8
-          RUN="${{ github.run_number }}"
-          VER="${MAJOR}.$(( RUN - MINOR_BASE ))"
-          echo "VERSION_NAME=${VER}" >> "$GITHUB_ENV"
-          echo "VERSION_CODE=${RUN}" >> "$GITHUB_ENV"
-          echo "本次版本号：${VER}（构建 #${RUN}）"
+          if [ -f version.properties ]; then
+            VERSION_NAME="$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')"
+            VERSION_CODE="$(grep '^versionCode=' version.properties | cut -d= -f2 | tr -d '[:space:]')"
+          else
+            # 兜底：没有 version.properties 时退回旧的推算公式
+            VERSION_NAME="1.$(( ${{ github.run_number }} - 8 ))"
+            VERSION_CODE="${{ github.run_number }}"
+          fi
+          if [ -z "$VERSION_NAME" ] || [ -z "$VERSION_CODE" ]; then
+            echo "::error::version.properties 缺少 versionName / versionCode"
+            exit 1
+          fi
+          echo "VERSION_NAME=${VERSION_NAME}" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=${VERSION_CODE}" >> "$GITHUB_ENV"
+          echo "本次版本号：v${VERSION_NAME}（versionCode ${VERSION_CODE}，构建 #${{ github.run_number }}）"
 
       - name: 编译并签名 APK
         run: bash tools/build_apk.sh

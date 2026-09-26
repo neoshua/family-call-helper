@@ -26,11 +26,20 @@ D8="$BT/d8"
 ZIPALIGN="$BT/zipalign"
 APKSIGNER="$BT/apksigner"
 
-# 版本号：由 CI 通过环境变量传入（VERSION_NAME / VERSION_CODE），本地未传时用默认值。
+# 版本号统一从仓库根目录的 version.properties 读取（与 CI 同源），
+# 环境变量 VERSION_NAME / VERSION_CODE 仍可覆盖（CI 或临时构建用）。
 # 关键点：App 内部显示的版本号（versionName）与产出的 APK 文件名用同一个值，
 # 避免出现「安装后显示 1.1.0、下载的包却叫 v1.5」这种对不上的情况。
-VERSION_CODE=${VERSION_CODE:-2}
-VERSION_NAME=${VERSION_NAME:-1.1.0}
+if [ -f version.properties ]; then
+    _PNAME="$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')"
+    _PCODE="$(grep '^versionCode=' version.properties | cut -d= -f2 | tr -d '[:space:]')"
+else
+    _PNAME=""
+    _PCODE=""
+    echo "警告：仓库根目录没有 version.properties，退回内置默认版本号。"
+fi
+VERSION_NAME=${VERSION_NAME:-${_PNAME:-1.0.0}}
+VERSION_CODE=${VERSION_CODE:-${_PCODE:-1}}
 APK_OUT="dist/亲情接听助手-v${VERSION_NAME}.apk"
 echo "构建版本：versionName=${VERSION_NAME} versionCode=${VERSION_CODE}"
 

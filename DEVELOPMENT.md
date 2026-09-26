@@ -48,11 +48,12 @@ app/src/main/java/com/jia/callhelper/    # 全部 Java 源码（18 个类，约 
 ```bash
 cd /workspace/wechat-call-helper
 BT=/tmp/bt34 JAR=/tmp/android34.jar \
-  VERSION_NAME=1.20 VERSION_CODE=28 \
   bash tools/build_apk.sh
 ```
 
-产出 `dist/亲情接听助手-v1.20.apk`（已 zipalign + 签名）。
+产出 `dist/亲情接听助手-v1.22.apk`（已 zipalign + 签名）。
+
+**版本号来源（v1.22 起）**：仓库根目录的 `version.properties` 是唯一来源，本地构建与 CI 都读它，不传任何版本号参数。`VERSION_NAME`/`VERSION_CODE` 环境变量仅在需要临时覆盖时使用（CI 传参、试验构建）。
 
 工具链缺失时环境变量怎么填：
 
@@ -60,10 +61,10 @@ BT=/tmp/bt34 JAR=/tmp/android34.jar \
 |---|---|---|
 | `BT` | Android build-tools 目录（要有 `aapt2`/`d8`/`zipalign`/`apksigner`） | `/tmp/bt34` |
 | `JAR` | `android.jar`（SDK 34） | `/tmp/android34.jar` |
-| `VERSION_NAME` | 版本名，同时写进清单与 APK 文件名 | `1.20` |
-| `VERSION_CODE` | 版本号 | `28` |
+| `VERSION_NAME` | 临时覆盖版本名（一般不用传，读 version.properties） | `1.22` |
+| `VERSION_CODE` | 临时覆盖版本号（一般不用传） | `30` |
 
-> **版本号的对应规则：`versionCode = 小版本号 + 8`**（`1.20 ↔ 28`）。见 §12.1 的来历，别写错。
+> **版本号在哪改**：升版本 = 在发布提交里同时改 `version.properties`（`versionName` + `versionCode`），versionCode 必须严格递增，否则已装用户无法覆盖升级。来历见 §12.1。
 
 ### 1.2 构建脚本里几个不能动的细节
 
@@ -627,7 +628,7 @@ v1.21 的处理原则：**只回收"确定没人再用"的那些** ——
 - [ ] 涉及浮层 → catch 分支里有 `removeViewImmediate`，且尊重三个开关 + `canOverlay()`
 - [ ] `screenSize()` 用 `getRealMetrics()`，与自动点击同一坐标基准
 - [ ] 涉及判断逻辑修改 → 确认 `RINGING_KEYS` 没混进「挂断」，且 `isInCall` 先于 `isRinging`
-- [ ] 版本号：`versionCode = 小版本号 + 8`，文件名与清单一致
+- [ ] 版本号：`version.properties` 已 bump（versionCode 严格递增），文件名与清单一致
 - [ ] 编译过一遍 `bash tools/build_apk.sh`，并确认结尾打印的版本号与文件名一致
 - [ ] 没把 keystore / token / 任何密钥写进仓库
 
@@ -663,9 +664,13 @@ v1.21 的处理原则：**只回收"确定没人再用"的那些** ——
 
 ### 12.1 版本号规则
 
-`versionCode = 小版本号 + 8`。
-CI 推出的版本号是 `1.$(run_number - 8)` —— 早期仓库跑过若干次 workflow 才定下这个脚本，
-`-8` 是为了让 CI 跑出来的小版本号从 1 开始。**这是历史包袱，不是 bug，别改。**
+**v1.21 翻车后改掉了**：早期 CI 用 `run_number - 8` 推算版本号，隐含假设"每次 push 恰好对应一个新版本"。
+v1.21 的改动从未单独入库发布，等 v1.22 一起提交时，run #29 被 `29-8` 推算成 v1.21 ——
+发布出的包与用户手上可能装过的本地 v1.21 撞 versionCode，无法升级。
+
+**现行规则**：版本号由随代码提交的 `version.properties` 明确指定（`versionName` + `versionCode` 两行），
+CI 与本地构建脚本都读它，不再推算。升版本 = 在发布那个提交里改这个文件。
+versionCode 必须严格递增（整数），否则已安装用户无法覆盖升级。
 
 ### 12.2 迭代方法论的反思（写给自己和后来的 agent）
 
