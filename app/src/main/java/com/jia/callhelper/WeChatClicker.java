@@ -48,7 +48,22 @@ public final class WeChatClicker {
         cancel();
         sBlindUsedThisCall = false;
         sBlindTotal = 0;
+        sSwipeTriedThisCall = false;
     }
+
+    /**
+     * 【v1.23】"整通来电只试一次上滑接听"的闸门。
+     *
+     * 为什么要加这个：用户的反馈是「日志显示点了很多次，电话就是没接」。
+     * 除了坐标算歪，还有一类可能从来没被排除过 —— **微信的来电页可能根本不响应点击**。
+     * 微信部分版本的来电界面是「**上滑接听**」（绿色按钮要往上拖），
+     * 只点一下不会接通，点一百下也不会。这种情况下所有定位算法再准都没用：
+     * 不是点歪了，是操作方式错了。
+     *
+     * 所以：点击尝试用尽后仍在响铃，就追加一次上滑；仍不成功才判失败。
+     * 每次来电只试一次，避免反复上滑误触别的控件。
+     */
+    private static boolean sSwipeTriedThisCall;
 
     /**
      * 【v1.13】"整通来电只准盲点一次"的闸门。
@@ -239,6 +254,22 @@ public final class WeChatClicker {
                     CallDiag.log("接听", "点击后校验：仍在响铃=" + ringing);
                     if (ringing && n < MAX_PRECISE_CLICKS && n < attempts) {
                         answerStep(n + 1, attempts, intervalMs, callback);
+                    } else if (ringing && !sSwipeTriedThisCall) {
+                        // 【v1.23】点了很多下还在响 → 怀疑这个版本的微信是「上滑接听」。
+                        // 只点不滑永远接不通，再准的坐标也没用。追加一次上滑试试。
+                        sSwipeTriedThisCall = true;
+                        CallDiag.log("接听", "已点 " + n + " 次仍在响铃"
+                                + " → 怀疑本版本微信要求「上滑接听」，改试向上滑");
+                        svc.swipeUpAnswer();
+                        post(TAG_VERIFY, new Runnable() {
+                            @Override
+                            public void run() {
+                                boolean ok = svc.isInCall() || !svc.isRinging();
+                                CallDiag.log("接听", "上滑接听校验："
+                                        + (ok ? "已离开响铃/进入通话 → 判定成功" : "仍在响铃 → 判定失败"));
+                                if (callback != null) callback.onResult(ok);
+                            }
+                        }, VERIFY_MS);
                     } else if (ringing) {
                         // 还在响却没接上，明确报告失败，让上层去响铃提醒老人
                         if (callback != null) callback.onResult(false);

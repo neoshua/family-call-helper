@@ -1123,7 +1123,7 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         if (seen != null) {
             CallDiag.log("接听", "按截图里那个绿色圆钮的中心点按 (" + seen[0] + "," + seen[1]
                     + ") 半径=" + seen[2] + "（不再用比例估算）");
-            if (tapScreen(seen[0], seen[1])) return RESULT_CLICKED_PRECISE;
+            if (tapScreen(seen[0], seen[1], SRC_SHOT)) return RESULT_CLICKED_PRECISE;
         }
 
         AccessibilityNodeInfo node = findAnswerNode(root);
@@ -1141,7 +1141,7 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
         // 2b) 镜像：只找到左下角的挂断键时，接听键就在同一行的对称位置
         float[] mirror = mirrorOfDecline(root);
-        if (mirror != null && tapScreen(mirror[0], mirror[1])) {
+        if (mirror != null && tapScreen(mirror[0], mirror[1], SRC_MIRROR)) {
             CallDiag.log("接听", "只找到左下角的挂断键，按左右对称推算接听键并点击 ("
                     + (int) mirror[0] + "," + (int) mirror[1] + ")");
             return RESULT_CLICKED_PRECISE;
@@ -1287,7 +1287,7 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         int[] size = screenSize();
         if (size[0] <= 0 || size[1] <= 0) return false;
         int[] p = answerPointInternal(win, size, navigationBarHeight());
-        return tapScreen(p[0], p[1]);
+        return tapScreen(p[0], p[1], SRC_RATIO);
     }
 
     /**
@@ -1301,7 +1301,7 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         if (seen != null) {
             CallDiag.log("接听", "按截图里那个绿色圆钮的中心点按 (" + seen[0] + "," + seen[1]
                     + ") 半径=" + seen[2] + "（不再用比例估算）");
-            return tapScreen(seen[0], seen[1]);
+            return tapScreen(seen[0], seen[1], SRC_SHOT);
         }
         return tapAnswerByRatio();
     }
@@ -1507,11 +1507,11 @@ public class CallHelperAccessibilityService extends AccessibilityService {
                 && r.exactCenterY() >= 0 && r.exactCenterY() <= sc[1];
         if (onScreen) {
             // 真机实测：微信的接听键比节点 bounds 略小，中心基本对得上，直接点中心即可
-            return tapScreen(r.exactCenterX(), r.exactCenterY());
+            return tapScreen(r.exactCenterX(), r.exactCenterY(), SRC_SEMANTIC);
         }
         // 节点坐标失真 → 退回到物理屏比例坐标（已验证准确）
         int[] p = answerPointInternal(findWeChatWindow(), sc, navigationBarHeight());
-        if (p[0] > 0 && p[1] > 0) return tapScreen(p[0], p[1]);
+        if (p[0] > 0 && p[1] > 0) return tapScreen(p[0], p[1], SRC_GEOMETRY);
         // 手势都不可用（极老的系统）：最后再试一次 ACTION_CLICK
         return actionClickNode(node);
     }
@@ -1591,23 +1591,167 @@ public class CallHelperAccessibilityService extends AccessibilityService {
 
     /** 对外暴露的"在屏幕某点按一下"（用于点通知横幅等） */
     public boolean tapAt(float x, float y) {
-        return tapScreen(x, y);
+        return tapScreen(x, y, SRC_BANNER);
     }
 
+    /**
+     * 在屏幕某点按一下。
+     *
+     * 【v1.23 的两次关键修正】都来自同一件事：用户要求"证明你真的能动屏幕"。
+     *
+     * 【一】以前第三个参数（GestureResultCallback）传的是 {@code null}。
+     * 后果很严重：{@code dispatchGesture()} 返回 true **只代表系统把手势收下排队了**，
+     * 不代表它真的执行了。被系统拒绝（锁屏、无障碍权限被回收、手势被别的应用层拦下、
+     * 上一个手势还没跑完）时照样返回 true。于是日志里那句"已点击"一直是**自证**，
+     * 而不是证据——这也是"日志看着都点了，电话就是没接"最可能的藏身之处。
+     * 现在补上回调：把系统真正的回报（执行完毕 / 被取消）也写进运行记录。
+     *
+     * 【二】以前完全不打日志。点没点、点在哪、谁的坐标，事后一概不知道。
+     * 现在每一次点击都记一行：坐标（像素 + 占屏百分比）、来源、屏幕尺寸、系统回报。
+     */
     private boolean tapScreen(float x, float y) {
-        if (Build.VERSION.SDK_INT < 24) return false;
+        return tapScreen(x, y, SRC_UNKNOWN);
+    }
+
+    private boolean tapScreen(float x, float y, String src) {
+        return gesture(x, y, x, y, TAP_DURATION_MS, src);
+    }
+
+    /**
+     * 派发一次手势（点击 = 起终点相同；滑动 = 起终点不同），统一在这里落日志。
+     *
+     * @param src 来源标记，写进日志，用来回溯"这一下是谁发起的"
+     */
+    private boolean gesture(float x0, float y0, float x1, float y1, long durMs, String src) {
+        if (Build.VERSION.SDK_INT < 24) {
+            CallDiag.log("点击", "派发失败：系统版本低于 Android 7.0（API "
+                    + Build.VERSION.SDK_INT + "），不支持无障碍手势");
+            return false;
+        }
+        int[] sz = screenSize();
+        boolean isSwipe = (Math.abs(x1 - x0) > 2 || Math.abs(y1 - y0) > 2);
+        String kind = isSwipe ? "滑动" : "点击";
+        String where = "(" + (int) x0 + "," + (int) y0 + ")";
+        if (isSwipe) where += " → (" + (int) x1 + "," + (int) y1 + ")";
+        String pct = "";
+        if (sz[0] > 0 && sz[1] > 0) {
+            pct = " [占屏 " + Math.round(x0 * 100f / sz[0]) + "%," + Math.round(y0 * 100f / sz[1]) + "%]";
+        }
+
         try {
             Path p = new Path();
-            p.moveTo(x, y);
+            p.moveTo(x0, y0);
+            if (isSwipe) p.lineTo(x1, y1);
             GestureDescription.Builder gb = new GestureDescription.Builder();
-            gb.addStroke(new GestureDescription.StrokeDescription(p, 0, 70));
-            boolean ok = dispatchGesture(gb.build(), null, null);
+            gb.addStroke(new GestureDescription.StrokeDescription(p, 0, durMs));
+            final String whereFinal = where;
+            final String tail = "来源=" + src + " 屏幕=" + sz[0] + "x" + sz[1] + " 时长=" + durMs + "ms";
+            boolean ok = dispatchGesture(gb.build(), new GestureResultCallback() {
+                @Override
+                public void onCompleted(GestureDescription gestureDescription) {
+                    CallDiag.log("点击", kind + "成功落地 ✓ " + whereFinal + " —— 系统回报：手势已执行完毕"
+                            + "（" + tail + "）");
+                }
+
+                @Override
+                public void onCancelled(GestureDescription gestureDescription) {
+                    CallDiag.log("点击", kind + "被系统取消 ✗ " + whereFinal
+                            + " —— 系统回报：手势没执行完就被取消（常见原因：屏幕熄灭/锁屏、"
+                            + "无障碍权限被回收、另一个手势抢占、来电界面已消失）（" + tail + "）");
+                }
+            }, null);
+            CallDiag.log("点击", "派发" + kind + " " + where + pct
+                    + " —— 系统" + (ok ? "已收下" : "拒绝受理") + "（" + tail + "）");
             // 点了屏幕，界面随时会变：清掉窗口缓存，别让紧接着的判断读到点击前的旧树
             dropWinCache();
             return ok;
         } catch (Exception e) {
+            CallDiag.log("点击", "派发" + kind + "异常 ✗ " + where + " —— " + e);
             return false;
         }
+    }
+
+    /** 向上滑动一段（微信部分版本的来电页是"上滑接听"，只点不动） */
+    private boolean swipeUp(float x, float y, float dist, String src) {
+        float top = y - dist;
+        if (top < 10) top = 10;
+        return gesture(x, y, x, top, SWIPE_DURATION_MS, src);
+    }
+
+    // ---- 点击来源标记（写进运行记录，便于回溯"这一下是谁点的"）----
+    static final String SRC_UNKNOWN = "未标注";
+    static final String SRC_SHOT = "截图定位";
+    static final String SRC_SEMANTIC = "语义定位";
+    static final String SRC_GEOMETRY = "几何定位";
+    static final String SRC_MIRROR = "镜像定位";
+    static final String SRC_RATIO = "比例兜底";
+    static final String SRC_BANNER = "通知横幅";
+    static final String SRC_TEST = "手动测试";
+    static final String SRC_SWIPE_FALLBACK = "上滑接听兜底";
+
+    private static final long TAP_DURATION_MS = 70L;
+    private static final long SWIPE_DURATION_MS = 400L;
+
+    /**
+     * 【v1.23 新增】手动测试手势：设置页按钮触发，走**与真实接听完全相同**的
+     * {@code dispatchGesture} 通道。
+     *
+     * 为什么要这个功能：用户提了一个很硬的验证办法——打开画板 App，按一下按钮，
+     * 看画板上有没有留下痕迹。这是「能不能真的操作屏幕」的唯一客观证据：
+     * 日志只能证明"我以为我点了"，画板上的一道印子才能证明系统确实动了。
+     *
+     * 关键设计：**不能为了测试另开一条路径**。测试手势与接听点击共用同一个
+     * {@link #gesture} 方法，测试通过 ⇒ 通道本身是通的；测试没痕迹 ⇒ 接听点不动
+     * 也就有了确定的解释（系统/权限层面拦截），不用再在定位算法上打转。
+     *
+     * @param mode 0=点一下，1=划一条短横线，2=上滑
+     */
+    public boolean testGesture(float x, float y, int mode) {
+        CallDiag.log("测试", "手动测试开始：模式=" + (mode == 0 ? "点击" : mode == 1 ? "短划" : "上滑")
+                + " 位置=(" + (int) x + "," + (int) y + ")");
+        switch (mode) {
+            case 1: { // 短横线：任何画板 App 上都必然留痕（有些画板单点不出笔迹）
+                int[] sz = screenSize();
+                float w = sz[0] > 0 ? sz[0] * 0.22f : 240f;
+                float x1 = Math.min(x + w, (sz[0] > 0 ? sz[0] : x + w) - 8f);
+                return gesture(x, y, x1, y, SWIPE_DURATION_MS, SRC_TEST);
+            }
+            case 2:
+                return swipeUp(x, y, SWIPE_TEST_DIST, SRC_TEST);
+            case 0:
+            default:
+                return tapScreen(x, y, SRC_TEST);
+        }
+    }
+
+    private static final float SWIPE_TEST_DIST = 320f;
+    /** 上滑接听的滑动距离：屏幕高度的 18%，够触发微信的滑动接听判定，又不至于滑过头 */
+    private static final float ANSWER_SWIPE_RATIO = 0.18f;
+
+    /**
+     * 【v1.23】上滑接听兜底：在接听键上按住往上滑一段。
+     *
+     * 触发时机：点击若干次仍在响铃（见 WeChatClicker）。
+     * 位置仍然优先用截图看到的绿钮圆心，看不到才用比例估算 —— 与点击同一套定位逻辑。
+     */
+    public boolean swipeUpAnswer() {
+        float x, y;
+        int[] seen = seenAnswerCenter();
+        if (seen != null) {
+            x = seen[0];
+            y = seen[1];
+        } else {
+            int[] p = answerPointInternal(findWeChatWindow(), screenSize(), navigationBarHeight());
+            if (p == null || p[0] <= 0 || p[1] <= 0) {
+                CallDiag.log("接听", "想试上滑接听，但连接听键的估算位置都算不出来 → 放弃上滑");
+                return false;
+            }
+            x = p[0];
+            y = p[1];
+        }
+        int[] sz = screenSize();
+        float dist = sz[1] > 0 ? sz[1] * ANSWER_SWIPE_RATIO : 360f;
+        return swipeUp(x, y, dist, SRC_SWIPE_FALLBACK);
     }
 
     /** 当前窗口是否属于微信（防止误操作别的应用的界面） */

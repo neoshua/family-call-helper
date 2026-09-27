@@ -613,6 +613,130 @@
             android:textColor="#FFFFFF"
             android:textSize="19sp"/>
 
+        <!-- ===== 模拟点击测试（v1.23）：用画板验证 App 真的能操作屏幕 ===== -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="26dp"
+            android:text="🧪 模拟点击测试"
+            android:textColor="#222222"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="#FFF8E1"
+            android:lineSpacingExtra="4dp"
+            android:padding="12dp"
+            android:text="怎么测：按下按钮后有 5 秒倒计时，这段时间你切到「画板/备忘录/涂鸦」随便哪个能画画的 App，到点 App 会在指定位置动一下。画板上出现痕迹 = 这个 App 确实能操作你的屏幕。\n它走的是和自动接听完全相同的通道，测的就是接听本身。"
+            android:textColor="#6D4C00"
+            android:textSize="15sp"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="位置：横向"
+                android:textColor="#444444"
+                android:textSize="17sp"/>
+
+            <EditText
+                android:id="@+id/et_test_x"
+                android:layout_width="80dp"
+                android:layout_height="wrap_content"
+                android:importantForAutofill="no"
+                android:inputType="number"
+                android:maxLength="3"
+                android:text="50"
+                android:textSize="18sp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="%　纵向"
+                android:textColor="#444444"
+                android:textSize="17sp"/>
+
+            <EditText
+                android:id="@+id/et_test_y"
+                android:layout_width="80dp"
+                android:layout_height="wrap_content"
+                android:importantForAutofill="no"
+                android:inputType="number"
+                android:maxLength="3"
+                android:text="60"
+                android:textSize="18sp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="%（屏幕左上角是 0,0）"
+                android:textColor="#888888"
+                android:textSize="15sp"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_test_tap"
+                android:layout_width="0dp"
+                android:layout_height="60dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_btn_primary"
+                android:stateListAnimator="@null"
+                android:text="👆 点一下"
+                android:textColor="#FFFFFF"
+                android:textSize="17sp"/>
+
+            <Button
+                android:id="@+id/btn_test_line"
+                android:layout_width="0dp"
+                android:layout_height="60dp"
+                android:layout_marginLeft="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_btn_primary"
+                android:stateListAnimator="@null"
+                android:text="✏ 划一条线"
+                android:textColor="#FFFFFF"
+                android:textSize="17sp"/>
+
+            <Button
+                android:id="@+id/btn_test_swipe"
+                android:layout_width="0dp"
+                android:layout_height="60dp"
+                android:layout_marginLeft="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_btn_primary"
+                android:stateListAnimator="@null"
+                android:text="👆 向上滑"
+                android:textColor="#FFFFFF"
+                android:textSize="17sp"/>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tv_test_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="#F1F8E9"
+            android:lineSpacingExtra="4dp"
+            android:padding="12dp"
+            android:text="还没测过。测完请打开「查看运行记录」，里面会记下点的位置、时间，以及系统是不是真的执行了。"
+            android:textColor="#33691E"
+            android:textSize="15sp"/>
+
         <TextView
             android:id="@+id/tv_about"
             android:layout_width="match_parent"

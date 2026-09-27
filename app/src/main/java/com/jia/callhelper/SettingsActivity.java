@@ -60,6 +60,29 @@ public class SettingsActivity extends Activity {
      */
     private volatile boolean mAlive;
 
+    // ===== v1.23 模拟点击测试 =====
+    private static final int TEST_TAP = 0;
+    private static final int TEST_LINE = 1;
+    private static final int TEST_SWIPE = 2;
+    /** 按下按钮后留多少秒给用户切到画板 App */
+    private static final int TEST_COUNTDOWN_SEC = 5;
+
+    private EditText mTestX;
+    private EditText mTestY;
+    private TextView mTestStatus;
+
+    /**
+     * 倒计时故意挂在一个**静态** Handler 上，而不是 Activity 的 mHandler。
+     *
+     * 原因很实在：这个测试的用途就是"你按了按钮 → 切到画板 → 看有没有痕迹"。
+     * 用户切走时设置页会 onStop；如果他顺手按了返回键，Activity 甚至会 onDestroy。
+     * 挂在 Activity 上的话（mHandler 在 onDestroy 里 removeCallbacksAndMessages(null)）
+     * 倒计时会被一起清掉 —— 用户看到的是"按了没反应"，又一次误判成功能坏了。
+     * 手势是靠无障碍服务派发的，不依赖这个页面活着，所以让它跑完。
+     */
+    private static final Handler sTestHandler = new Handler(Looper.getMainLooper());
+    private static Runnable sTestPending;
+
     @Override
     protected void onDestroy() {
         // 一次性撤销所有还排队的轮询（"null" = 不管 token，全部取消）
@@ -171,6 +194,29 @@ public class SettingsActivity extends Activity {
             @Override
             public void onClick(View v) {
                 startActivity(new Intent(SettingsActivity.this, DiagActivity.class));
+            }
+        });
+
+        // ===== v1.23 模拟点击测试 =====
+        mTestX = (EditText) findViewById(R.id.et_test_x);
+        mTestY = (EditText) findViewById(R.id.et_test_y);
+        mTestStatus = (TextView) findViewById(R.id.tv_test_status);
+        bind(R.id.btn_test_tap, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startTest(TEST_TAP);
+            }
+        });
+        bind(R.id.btn_test_line, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startTest(TEST_LINE);
+            }
+        });
+        bind(R.id.btn_test_swipe, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startTest(TEST_SWIPE);
             }
         });
 
@@ -371,6 +417,88 @@ public class SettingsActivity extends Activity {
         hint.setText(WhiteListManager.isAppEnabled(this)
                 ? "当前已启用：会监听微信来电、播报来电人，并按名单设置自动接听。"
                 : "当前已停用：不再监听微信来电、不播报、不画绿圈、不自动接听。");
+    }
+
+    // ==================== v1.23 模拟点击测试 ====================
+
+    /**
+     * 按下一个测试按钮：倒数 TEST_COUNTDOWN_SEC 秒，然后派发一次手势。
+     *
+     * 为什么必须留这几秒：按钮在**本应用自己的界面**上。按下就立刻点的话，
+     * 那一下会落在我们自己的设置页上，画板上当然什么都没有 ——
+     * 那是一次注定失败的测试，而且会得出"App 不能操作屏幕"的错误结论。
+     * 留出 5 秒，用户有时间切到画板 App，手势才会落在画板上。
+     */
+    private void startTest(final int mode) {
+        CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+        if (svc == null) {
+            String msg = "❌ 无障碍服务没在运行，手势发不出去。\n"
+                    + "请先回到本页上方「无障碍服务」那一项把它打开，再回来测。";
+            mTestStatus.setText(msg);
+            CallDiag.log("测试", "手动测试没跑起来：无障碍服务未运行");
+            Toast.makeText(this, "无障碍服务未开启，无法点击", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        int[] sz = Screen.realSize(this);
+        if (sz[0] <= 0 || sz[1] <= 0) {
+            mTestStatus.setText("❌ 取不到屏幕尺寸，无法计算点击位置。");
+            return;
+        }
+        final float x = sz[0] * clampPct(mTestX, 50) / 100f;
+        final float y = sz[1] * clampPct(mTestY, 60) / 100f;
+        final String kind = mode == TEST_TAP ? "点一下" : mode == TEST_LINE ? "划一条横线" : "向上滑";
+
+        // 上一次还没点的先作废，避免连按几次后一起落在画板上、分不清哪下是哪下
+        if (sTestPending != null) sTestHandler.removeCallbacks(sTestPending);
+
+        CallDiag.log("测试", "已按下「" + kind + "」：将在 " + TEST_COUNTDOWN_SEC + " 秒后于 ("
+                + (int) x + "," + (int) y + ") 执行（屏幕 " + sz[0] + "x" + sz[1] + "）");
+        countdown(mode, x, y, kind, TEST_COUNTDOWN_SEC);
+    }
+
+    private void countdown(final int mode, final float x, final float y,
+                           final String kind, final int left) {
+        if (left <= 0) {
+            sTestPending = null;
+            CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+            boolean ok = svc != null && svc.testGesture(x, y, mode);
+            CallDiag.log("测试", "已执行「" + kind + "」，派发结果=" + ok
+                    + "（true 只代表系统收下了手势；有没有真的动，请看画板上的痕迹，"
+                    + "以及运行记录里那句「系统回报」）");
+            if (mAlive && mTestStatus != null) {
+                mTestStatus.setText("✅ 已在 (" + (int) x + "," + (int) y + ") " + kind + "。\n"
+                        + "现在看看画板上有没有痕迹：有 = 这个 App 确实能操作你的屏幕；\n"
+                        + "没有 = 手势被系统挡住了（运行记录里会有「被系统取消」那一行）。");
+            }
+            return;
+        }
+        if (mAlive && mTestStatus != null) {
+            mTestStatus.setText("⏳ 还有 " + left + " 秒 —— 快切到画板 App，到点会在 ("
+                    + (int) x + "," + (int) y + ") " + kind + "。");
+        }
+        sTestPending = new Runnable() {
+            @Override
+            public void run() {
+                countdown(mode, x, y, kind, left - 1);
+            }
+        };
+        sTestHandler.postDelayed(sTestPending, 1000L);
+    }
+
+    /** 读百分比输入框，空/非法时用默认值，并夹到 0~100（防止算出屏幕外的坐标） */
+    private int clampPct(EditText et, int def) {
+        if (et == null) return def;
+        String s = et.getText() == null ? "" : et.getText().toString().trim();
+        if (s.isEmpty()) return def;
+        try {
+            int v = Integer.parseInt(s);
+            if (v < 0) return 0;
+            if (v > 100) return 100;
+            return v;
+        } catch (NumberFormatException e) {
+            return def;
+        }
     }
 
     /** 显示当前生效的接听键位置（默认 / 已自己校准） */
