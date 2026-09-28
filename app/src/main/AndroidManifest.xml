@@ -73,6 +73,13 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize"/>
 
+        <!-- 自定义来电话术：微信换文案 / 海外版识别不到来电时，用户自己改词表 -->
+        <activity android:name=".NotifyPhrasesActivity"
+            android:exported="false"
+            android:label="自定义来电话术"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"/>
+
         <!--
             「停止提醒」按钮的落点：来电时老人/家人随时能把语音和铃声关掉。
             通知上有一个，屏幕浮层上也有一个，都走这里。

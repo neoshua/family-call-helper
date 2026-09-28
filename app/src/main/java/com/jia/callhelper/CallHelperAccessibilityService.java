@@ -212,6 +212,14 @@ public class CallHelperAccessibilityService extends AccessibilityService {
     /** 截图结果的有效期：超过这个时间界面早就变了，不能拿旧图当证据 */
     private static final long LOOK_FRESH_MS = 3000L;
 
+    // ==================== v1.24 微信界面控件树导出 ====================
+    /** 单次导出最多记录的节点数，避免超大界面把运行记录刷爆 */
+    private static final int DUMP_MAX_NODES = 600;
+    /** 自动导出（来电会话中）的最小间隔 */
+    private static final long DUMP_AUTO_INTERVAL_MS = 15000L;
+    /** 上次自动导出的时刻 */
+    private volatile long mLastDumpAt = 0L;
+
     public static CallHelperAccessibilityService get() {
         return sInstance;
     }
@@ -273,6 +281,19 @@ public class CallHelperAccessibilityService extends AccessibilityService {
         // 不会像粗暴丢弃那样把"已经接通"这个关键转变丢掉。
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             long now = SystemClock.elapsedRealtime();
+            // 【v1.24】来电会话进行中时，把微信全屏来电页的控件树自动导出一次，
+            // 让你每次真实来电后都能在「运行记录」里看到"哪个控件才是接听键"，
+            // 用来核对/校准判定逻辑。限流到 15 秒一次，避免刷屏。
+            if (CallSessionManager.isSessionActive()
+                    && now - mLastDumpAt > DUMP_AUTO_INTERVAL_MS) {
+                mLastDumpAt = now;
+                sMain.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        dumpWeChatTree("自动：来电会话中微信窗口变化");
+                    }
+                }, 600L); // 稍等，等界面稳定再抓树
+            }
             if (now - mLastScanAt >= WIN_STATE_THROTTLE_MS) {
                 mWindowScanPending = false;
                 scanNow(true);
@@ -795,6 +816,16 @@ public class CallHelperAccessibilityService extends AccessibilityService {
                     + " → 确实站在微信全屏来电页上（读作节点树管用时以这条为准）");
             return true;
         }
+        // 【v1.24】靠结构/截图都没直接确认时，把当前微信窗口类名记下来，
+        // 方便你核对"到底是不是通话页"。精确的判据其实就是这个 Activity 类名：
+        //   语音：com.tencent.mm/.plugin.voip.ui.VoiceVoipUI
+        //   视频：com.tencent.mm/.plugin.voip.ui.VideoVoipUI（旧版也叫 VideoActivity）
+        // 它比读节点树/截图颜色都稳 —— 整页自绘时节点树可能一个字都没有，类名却是系统给的。
+        CallDiag.log("无障碍", "未能直接确认全屏来电：当前微信窗口类名="
+                + (mLastWinClass == null ? "(未知)" : mLastWinClass)
+                + " voip类名命中=" + voipWindow()
+                + " 微信前台=" + isWeChatForeground()
+                + "（来电话术/类名若对不上你的微信版本，请在「设置」里核对）");
         // 还没拿到结论：先要一张截图，下一次扫描自然会有结果。
         // 真来电页响铃时微信会持续抛窗口事件，所以下一次扫描一定会来。
         requestLook();
@@ -1587,6 +1618,91 @@ public class CallHelperAccessibilityService extends AccessibilityService {
             }
         } catch (Exception ignore) {}
         return false;
+    }
+
+    // ==================== v1.24 微信界面控件树导出 ====================
+
+    /**
+     * 把当前微信界面（优先取微信自己的窗口，而不是我们悬浮在最上面的指引层）
+     * 的**全部控件**导出到运行记录，供你确认"哪一个控件才是接听电话的界面"。
+     *
+     * <p>触发方式有两种：
+     * <ol>
+     *   <li><b>手动</b>：设置页「📋 记录微信来电界面控件」按钮（倒数后切到微信来电页触发）；</li>
+     *   <li><b>自动</b>：来电会话进行中、微信抛出窗口变化、但还没确认是全屏来电时，
+     *       自动导出一次（限流，避免刷屏），让你每次真实来电后都能在记录里看到控件树。</li>
+     * </ol>
+     *
+     * <p>每个控件记录：序号 / 类名 / 文字 / 描述 / 资源id / 是否可点击 / 是否可用 / 坐标。
+     * 其中<b>资源id</b>和<b>类名</b>是最有价值的 —— 精确判定一个界面是不是"来电页"，
+     * 看 Activity 类名（如 {@code VoiceVoipUI}）；定位接听键，优先看文字"接听"/"挂断"，
+     * 资源id 会因微信版本变化，仅作参考。
+     */
+    public void dumpWeChatTree(String reason) {
+        WeChatWin w = null;
+        try {
+            w = findWeChatWindow();
+        } catch (Throwable ignore) {
+        }
+        boolean fromCache = w != null && w.root != null;
+        AccessibilityNodeInfo root = fromCache ? w.root : getRootInActiveWindow();
+        if (root == null) {
+            CallDiag.log("控件", "[" + reason + "] 拿不到微信界面根节点：微信可能没在前台，"
+                    + "或无障碍权限被回收。请确认微信正在全屏显示来电页、且本 App 无障碍已开启。");
+            return;
+        }
+        Rect wb = (w != null) ? w.bounds : null;
+        int[] sz = screenSize();
+        CallDiag.log("控件", "==== 开始导出微信控件树（" + reason + "）====");
+        CallDiag.log("控件", "微信窗口区域=" + (wb == null ? "(未知)" : wb.flattenToString())
+                + "  屏幕尺寸=" + (sz[0] > 0 ? (sz[0] + "x" + sz[1]) : "(未知)"));
+        CallDiag.log("控件", "当前微信 Activity 类名=" + (mLastWinClass == null ? "(未知)" : mLastWinClass)
+                + (voipWindow() ? "  ← 含 voip，疑似通话页" : ""));
+        final int[] cnt = {0};
+        dumpRec(root, 0, cnt);
+        CallDiag.log("控件", "==== 控件树导出结束，共 " + cnt[0] + " 个节点 ====");
+        // 来自窗口缓存的根节点由缓存统一管理回收，这里不要动；
+        // 来自 getRootInActiveWindow 的则自己回收一次（dumpRec 只回收子节点）。
+        if (!fromCache) recycleQuietly(root);
+    }
+
+    private void dumpRec(AccessibilityNodeInfo node, int depth, int[] cnt) {
+        if (node == null || cnt[0] >= DUMP_MAX_NODES) return;
+        cnt[0]++;
+        StringBuilder sb = new StringBuilder();
+        sb.append("#").append(cnt[0]).append(" ");
+        for (int i = 0; i < depth; i++) sb.append("  ");
+        CharSequence cls = node.getClassName();
+        CharSequence txt = node.getText();
+        CharSequence desc = node.getContentDescription();
+        CharSequence id = node.getViewIdResourceName();
+        Rect b = new Rect();
+        try {
+            node.getBoundsInScreen(b);
+        } catch (Throwable ignore) {
+        }
+        sb.append("[").append(cls == null ? "?" : cls).append("]");
+        sb.append(" text=").append(q(txt));
+        sb.append(" desc=").append(q(desc));
+        sb.append(" id=").append(id == null ? "-" : id);
+        sb.append(" click=").append(node.isClickable());
+        sb.append(" en=").append(node.isEnabled());
+        sb.append(" vis=").append(node.isVisibleToUser());
+        sb.append(" b=").append(b.flattenToString());
+        CallDiag.log("控件", sb.toString());
+        int n = node.getChildCount();
+        for (int i = 0; i < n; i++) {
+            AccessibilityNodeInfo c = node.getChild(i);
+            dumpRec(c, depth + 1, cnt);
+            recycleQuietly(c);
+        }
+    }
+
+    private static String q(CharSequence s) {
+        if (s == null) return "-";
+        String t = s.toString();
+        if (t.length() > 40) t = t.substring(0, 40) + "…";
+        return "\"" + t + "\"";
     }
 
     /** 对外暴露的"在屏幕某点按一下"（用于点通知横幅等） */

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:background="@android:color/white">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="自定义来电话术"
+            android:textColor="@color/textMain"
+            android:textSize="28sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:lineSpacingExtra="4dp"
+            android:text="微信换文案、或用的是海外版/英文版微信时，默认词表可能一个都匹配不上，来电就不触发。\n每行写一句完整的来电邀请话术，改完保存即可生效。没改过时沿用默认值。"
+            android:textColor="@color/textSub"
+            android:textSize="15sp"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="① 是「来电邀请」的话术（出现其中任一句 → 当作来电）"
+            android:textColor="@color/textMain"
+            android:textSize="18sp"
+            android:textStyle="bold"/>
+
+        <EditText
+            android:id="@+id/et_invite"
+            android:layout_width="match_parent"
+            android:layout_height="200dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_btn_ghost"
+            android:gravity="top|start"
+            android:inputType="textMultiLine"
+            android:lineSpacingExtra="4dp"
+            android:padding="12dp"
+            android:textSize="17sp"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="② 是「已结束/不是新来电」的话术（先排除，优先级更高）"
+            android:textColor="@color/textMain"
+            android:textSize="18sp"
+            android:textStyle="bold"/>
+
+        <EditText
+            android:id="@+id/et_not_invite"
+            android:layout_width="match_parent"
+            android:layout_height="160dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_btn_ghost"
+            android:gravity="top|start"
+            android:inputType="textMultiLine"
+            android:lineSpacingExtra="4dp"
+            android:padding="12dp"
+            android:textSize="17sp"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_phrases_save"
+                android:layout_width="0dp"
+                android:layout_height="60dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_btn_primary"
+                android:stateListAnimator="@null"
+                android:text="保存"
+                android:textColor="#FFFFFF"
+                android:textSize="20sp"/>
+
+            <Button
+                android:id="@+id/btn_phrases_reset"
+                android:layout_width="0dp"
+                android:layout_height="60dp"
+                android:layout_marginLeft="12dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_btn_ghost"
+                android:stateListAnimator="@null"
+                android:text="恢复默认"
+                android:textColor="@color/textMain"
+                android:textSize="20sp"/>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:layout_marginBottom="20dp"
+            android:lineSpacingExtra="4dp"
+            android:text="提示：英文版微信的来电文案类似「XXX is inviting you to a video call」，可把它整句加上去。保存后下一次来电即用新词表。"
+            android:textColor="#888888"
+            android:textSize="14sp"/>
+    </LinearLayout>
+</ScrollView>

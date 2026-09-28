@@ -613,6 +613,18 @@
             android:textColor="#FFFFFF"
             android:textSize="19sp"/>
 
+        <!-- 自定义来电话术：微信换文案 / 海外版识别不到来电时，在这里改词表 -->
+        <Button
+            android:id="@+id/btn_open_phrases"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_btn_ghost"
+            android:stateListAnimator="@null"
+            android:text="✎ 自定义来电话术（识别不到来电时改这里）"
+            android:textColor="@color/textMain"
+            android:textSize="19sp"/>
+
         <!-- ===== 模拟点击测试（v1.23）：用画板验证 App 真的能操作屏幕 ===== -->
         <TextView
             android:layout_width="match_parent"
@@ -720,10 +732,34 @@
                 android:layout_weight="1"
                 android:background="@drawable/bg_btn_primary"
                 android:stateListAnimator="@null"
-                android:text="👆 向上滑"
-                android:textColor="#FFFFFF"
-                android:textSize="17sp"/>
+            android:text="👆 向上滑"
+            android:textColor="#FFFFFF"
+            android:textSize="17sp"/>
         </LinearLayout>
+
+        <!-- 导出微信来电界面控件树：让你看清全屏来电页上到底有哪些按钮 -->
+        <Button
+            android:id="@+id/btn_dump_tree"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_btn_primary"
+            android:stateListAnimator="@null"
+            android:text="📋 记录微信来电界面控件（导出到运行记录）"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"/>
+
+        <TextView
+            android:id="@+id/tv_dump_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="#F1F8E9"
+            android:lineSpacingExtra="4dp"
+            android:padding="12dp"
+            android:text="怎么用：让家人给你打个微信电话（或你自己开微信视频通话），按下按钮 → 5 秒倒计时里切回微信来电页 → 到点本 App 会把微信界面上的所有按钮、文字、坐标记进运行记录。你据此判断哪个控件才是「接听键」。"
+            android:textColor="#33691E"
+            android:textSize="15sp"/>
 
         <TextView
             android:id="@+id/tv_test_status"

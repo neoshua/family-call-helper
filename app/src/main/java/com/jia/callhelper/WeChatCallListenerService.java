@@ -67,7 +67,7 @@ public class WeChatCallListenerService extends NotificationListenerService {
     }
 
     /**
-     * 【v1.22】判定"这是一通正在响铃的来电"。
+     * 【v1.22 / v1.24】判定"这是一通正在响铃的来电"。
      *
      * ## 为什么这里必须死守"完整话术"
      *
@@ -86,22 +86,12 @@ public class WeChatCallListenerService extends NotificationListenerService {
      *   标题：张三        正文：邀请你视频通话
      *   标题：微信        正文：张三：邀请你语音通话
      * 所以这里逐条列出**完整话术**，不接受孤立关键词。
+     *
+     * ## v1.24 起词表可自定义
+     * 词表不再写死在这里，改存到 {@link NotifyPhrasesPrefs}（SharedPreferences）。
+     * 用户可在「设置 → 自定义来电话术」里改，用来适配海外版/换文案的微信。
+     * 没改过就用默认值，行为和 v1.23 一致。
      */
-    private static final String[] INVITE_PHRASES = {
-            "邀请你视频通话", "邀请你语音通话", "邀请你通话",
-            "邀请你进行视频通话", "邀请你进行语音通话",
-            "邀请你视频", "邀请你语音", "邀请你接听",
-            "邀请您视频通话", "邀请您语音通话", "邀请您通话",
-            "视频通话邀请", "语音通话邀请", "通话邀请",
-            "向您发起视频通话", "向您发起语音通话",
-            "正在呼叫你", "正在呼叫您"
-    };
-
-    /** 通话已经结束的通知里常见的话术：不能因为它含"通话"就当成新来电 */
-    private static final String[] NOT_AN_INVITE = {
-            "通话时长", "通话结束", "已接通", "通话中断", "通话已",
-            "已取消", "已拒绝", "未接听", "已过期"
-    };
 
     /**
      * 判断是否是「正在响铃的来电邀请」。
@@ -111,10 +101,10 @@ public class WeChatCallListenerService extends NotificationListenerService {
      * 所以先否定的那一步必须在前。
      */
     private boolean isIncomingInvite(String s) {
-        for (String k : NOT_AN_INVITE) {
+        for (String k : NotifyPhrasesPrefs.getNotInvitePhrases(this)) {
             if (s.contains(k)) return false;
         }
-        for (String k : INVITE_PHRASES) {
+        for (String k : NotifyPhrasesPrefs.getInvitePhrases(this)) {
             if (s.contains(k)) return true;
         }
         return false;

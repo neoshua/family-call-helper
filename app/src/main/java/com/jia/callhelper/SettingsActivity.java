@@ -64,12 +64,15 @@ public class SettingsActivity extends Activity {
     private static final int TEST_TAP = 0;
     private static final int TEST_LINE = 1;
     private static final int TEST_SWIPE = 2;
+    /** v1.24 导出微信当前界面控件树（让用户看清全屏来电页上有哪些控件） */
+    private static final int TEST_DUMP = 3;
     /** 按下按钮后留多少秒给用户切到画板 App */
     private static final int TEST_COUNTDOWN_SEC = 5;
 
     private EditText mTestX;
     private EditText mTestY;
     private TextView mTestStatus;
+    private TextView mDumpStatus;
 
     /**
      * 倒计时故意挂在一个**静态** Handler 上，而不是 Activity 的 mHandler。
@@ -219,12 +222,27 @@ public class SettingsActivity extends Activity {
                 startTest(TEST_SWIPE);
             }
         });
+        bind(R.id.btn_dump_tree, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startTest(TEST_DUMP);
+            }
+        });
+        mDumpStatus = (TextView) findViewById(R.id.tv_dump_status);
 
         // 播报文字设置：所有语音内容都可以自己改（用户要求）
         bind(R.id.btn_open_script, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 startActivity(new Intent(SettingsActivity.this, SpeakScriptActivity.class));
+            }
+        });
+
+        // 【v1.24】自定义来电话术：微信换文案 / 海外版识别不到来电时，在这里改词表
+        bind(R.id.btn_open_phrases, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(SettingsActivity.this, NotifyPhrasesActivity.class));
             }
         });
 
@@ -434,26 +452,43 @@ public class SettingsActivity extends Activity {
         if (svc == null) {
             String msg = "❌ 无障碍服务没在运行，手势发不出去。\n"
                     + "请先回到本页上方「无障碍服务」那一项把它打开，再回来测。";
-            mTestStatus.setText(msg);
+            if (mode == TEST_DUMP) {
+                if (mDumpStatus != null) mDumpStatus.setText(msg);
+            } else {
+                mTestStatus.setText(msg);
+            }
             CallDiag.log("测试", "手动测试没跑起来：无障碍服务未运行");
-            Toast.makeText(this, "无障碍服务未开启，无法点击", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "无障碍服务未开启，无法操作", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        int[] sz = Screen.realSize(this);
-        if (sz[0] <= 0 || sz[1] <= 0) {
-            mTestStatus.setText("❌ 取不到屏幕尺寸，无法计算点击位置。");
-            return;
+        final String kind;
+        final float x, y;
+        int[] sz = null;
+        if (mode == TEST_DUMP) {
+            kind = "记录微信界面控件";
+            x = 0; y = 0;
+        } else {
+            sz = Screen.realSize(this);
+            if (sz[0] <= 0 || sz[1] <= 0) {
+                mTestStatus.setText("❌ 取不到屏幕尺寸，无法计算点击位置。");
+                return;
+            }
+            x = sz[0] * clampPct(mTestX, 50) / 100f;
+            y = sz[1] * clampPct(mTestY, 60) / 100f;
+            kind = mode == TEST_TAP ? "点一下" : mode == TEST_LINE ? "划一条横线" : "向上滑";
         }
-        final float x = sz[0] * clampPct(mTestX, 50) / 100f;
-        final float y = sz[1] * clampPct(mTestY, 60) / 100f;
-        final String kind = mode == TEST_TAP ? "点一下" : mode == TEST_LINE ? "划一条横线" : "向上滑";
 
         // 上一次还没点的先作废，避免连按几次后一起落在画板上、分不清哪下是哪下
         if (sTestPending != null) sTestHandler.removeCallbacks(sTestPending);
 
-        CallDiag.log("测试", "已按下「" + kind + "」：将在 " + TEST_COUNTDOWN_SEC + " 秒后于 ("
-                + (int) x + "," + (int) y + ") 执行（屏幕 " + sz[0] + "x" + sz[1] + "）");
+        if (mode == TEST_DUMP) {
+            CallDiag.log("测试", "已按下「" + kind + "」：将在 " + TEST_COUNTDOWN_SEC
+                    + " 秒后导出微信当前界面控件树");
+        } else {
+            CallDiag.log("测试", "已按下「" + kind + "」：将在 " + TEST_COUNTDOWN_SEC + " 秒后于 ("
+                    + (int) x + "," + (int) y + ") 执行（屏幕 " + sz[0] + "x" + sz[1] + "）");
+        }
         countdown(mode, x, y, kind, TEST_COUNTDOWN_SEC);
     }
 
@@ -461,6 +496,17 @@ public class SettingsActivity extends Activity {
                            final String kind, final int left) {
         if (left <= 0) {
             sTestPending = null;
+            if (mode == TEST_DUMP) {
+                CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
+                if (svc != null) svc.dumpWeChatTree("手动：记录微信当前界面控件");
+                CallDiag.log("控件", "已手动导出微信界面控件树（详见「查看运行记录」）");
+                if (mAlive && mDumpStatus != null) {
+                    mDumpStatus.setText("✅ 已把微信当前界面控件导出到运行记录。\n"
+                            + "打开「查看运行记录」，看每个按钮的类名/文字/坐标，"
+                            + "据此判断哪个才是接听键。");
+                }
+                return;
+            }
             CallHelperAccessibilityService svc = CallHelperAccessibilityService.get();
             boolean ok = svc != null && svc.testGesture(x, y, mode);
             CallDiag.log("测试", "已执行「" + kind + "」，派发结果=" + ok
@@ -473,9 +519,16 @@ public class SettingsActivity extends Activity {
             }
             return;
         }
-        if (mAlive && mTestStatus != null) {
-            mTestStatus.setText("⏳ 还有 " + left + " 秒 —— 快切到画板 App，到点会在 ("
-                    + (int) x + "," + (int) y + ") " + kind + "。");
+        if (mAlive) {
+            if (mode == TEST_DUMP) {
+                if (mDumpStatus != null) {
+                    mDumpStatus.setText("⏳ 还有 " + left + " 秒 —— 快切回微信来电页，"
+                            + "到点会把它界面上的所有控件导出到运行记录。");
+                }
+            } else if (mTestStatus != null) {
+                mTestStatus.setText("⏳ 还有 " + left + " 秒 —— 快切到画板 App，到点会在 ("
+                        + (int) x + "," + (int) y + ") " + kind + "。");
+            }
         }
         sTestPending = new Runnable() {
             @Override
